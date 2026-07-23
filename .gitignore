@@ -1,0 +1,38 @@
+# Binaries
+/myapp
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries and coverage
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Go build/module caches
+/vendor/
+go.work
+go.work.sum
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+
+# Editors / IDEs
+.idea/
+.vscode/
+
+# AI workflow (Claude Code)
+.claude/settings.local.json
+.codegraph/
+.scratch/
+docs/agents/
