@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -187,13 +188,21 @@ func TestStaticIndexServed(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "<title>todo</title>") {
+	body := rec.Body.String()
+	if !strings.Contains(body, "<title>todo</title>") {
 		t.Errorf("index.html body missing expected title tag")
 	}
 
-	rec = doJSON(t, mux, "GET", "/app.js", nil)
+	// The built SPA's asset filenames are content-hashed by Vite, so
+	// extract the referenced bundle path from index.html rather than
+	// assuming a fixed name like the old hand-written app.js.
+	m := regexp.MustCompile(`src="(/assets/[^"]+\.js)"`).FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("index.html has no referenced JS bundle: %s", body)
+	}
+	rec = doJSON(t, mux, "GET", m[1], nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("app.js status = %d", rec.Code)
+		t.Fatalf("bundle %s status = %d", m[1], rec.Code)
 	}
 }
 
