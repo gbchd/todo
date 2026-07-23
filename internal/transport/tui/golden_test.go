@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/exp/teatest"
+	"github.com/stretchr/testify/require"
 
 	"github.com/gbchd/todo/internal/repository"
 	"github.com/gbchd/todo/internal/service/todo"
@@ -17,9 +18,7 @@ func seededService(t *testing.T) *todo.Service {
 	t.Helper()
 	ctx := context.Background()
 	repo, err := repository.Open(ctx, t.TempDir()+"/todo.db")
-	if err != nil {
-		t.Fatalf("open repo: %v", err)
-	}
+	require.NoError(t, err, "open repo")
 	t.Cleanup(func() { repo.Close() })
 
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
@@ -30,9 +29,8 @@ func seededService(t *testing.T) *todo.Service {
 		{Title: "Ship release", Status: todo.StatusDone, Priority: todo.PriorityLow, CreatedAt: now, UpdatedAt: now},
 	}
 	for _, task := range seedTasks {
-		if _, err := repo.Create(ctx, task); err != nil {
-			t.Fatalf("seed: %v", err)
-		}
+		_, err := repo.Create(ctx, task)
+		require.NoError(t, err, "seed")
 	}
 	return todo.NewService(repo)
 }
@@ -46,15 +44,11 @@ func runGolden(t *testing.T, layout layoutKind) []byte {
 	time.Sleep(300 * time.Millisecond)
 
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	if err := tm.Quit(); err != nil {
-		t.Fatalf("quit: %v", err)
-	}
+	require.NoError(t, tm.Quit(), "quit")
 
 	out := tm.FinalOutput(t, teatest.WithFinalTimeout(3*time.Second))
 	bts, err := io.ReadAll(out)
-	if err != nil {
-		t.Fatalf("read final output: %v", err)
-	}
+	require.NoError(t, err, "read final output")
 	return bts
 }
 

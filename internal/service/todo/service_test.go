@@ -2,9 +2,11 @@ package todo
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func newTestService() (*Service, *fakeRepository, *time.Time) {
@@ -20,69 +22,43 @@ func TestAddTask(t *testing.T) {
 	svc, _, now := newTestService()
 
 	got, err := svc.AddTask(ctx, NewTask{Title: "Buy milk"})
-	if err != nil {
-		t.Fatalf("AddTask: %v", err)
-	}
-	if got.ID == 0 {
-		t.Errorf("expected non-zero id")
-	}
-	if got.Status != StatusOpen {
-		t.Errorf("Status = %q, want open", got.Status)
-	}
-	if got.Priority != PriorityNone {
-		t.Errorf("Priority = %q, want none", got.Priority)
-	}
-	if !got.CreatedAt.Equal(*now) || !got.UpdatedAt.Equal(*now) {
-		t.Errorf("timestamps not set to clock time")
-	}
+	require.NoError(t, err)
+	assert.NotZero(t, got.ID)
+	assert.Equal(t, StatusOpen, got.Status)
+	assert.Equal(t, PriorityNone, got.Priority)
+	assert.True(t, got.CreatedAt.Equal(*now) && got.UpdatedAt.Equal(*now), "timestamps not set to clock time")
 }
 
 func TestAddTask_EmptyTitle(t *testing.T) {
 	svc, _, _ := newTestService()
 	_, err := svc.AddTask(context.Background(), NewTask{Title: "   "})
 	var verr *ValidationError
-	if !errors.As(err, &verr) {
-		t.Fatalf("err = %v, want *ValidationError", err)
-	}
-	if verr.Field != "title" {
-		t.Errorf("Field = %q, want title", verr.Field)
-	}
+	require.ErrorAs(t, err, &verr)
+	assert.Equal(t, "title", verr.Field)
 }
 
 func TestAddTask_InvalidPriority(t *testing.T) {
 	svc, _, _ := newTestService()
 	_, err := svc.AddTask(context.Background(), NewTask{Title: "x", Priority: "urgent"})
 	var verr *ValidationError
-	if !errors.As(err, &verr) {
-		t.Fatalf("err = %v, want *ValidationError", err)
-	}
-	if verr.Field != "priority" {
-		t.Errorf("Field = %q, want priority", verr.Field)
-	}
+	require.ErrorAs(t, err, &verr)
+	assert.Equal(t, "priority", verr.Field)
 }
 
 func TestAddTask_NormalizesDueDate(t *testing.T) {
 	svc, _, _ := newTestService()
 	due := time.Date(2026, 8, 1, 15, 30, 0, 0, time.FixedZone("x", 3600))
 	got, err := svc.AddTask(context.Background(), NewTask{Title: "x", DueDate: &due})
-	if err != nil {
-		t.Fatalf("AddTask: %v", err)
-	}
-	if got.DueDate == nil {
-		t.Fatalf("DueDate is nil")
-	}
+	require.NoError(t, err)
+	require.NotNil(t, got.DueDate)
 	want := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-	if !got.DueDate.Equal(want) {
-		t.Errorf("DueDate = %v, want %v", got.DueDate, want)
-	}
+	assert.True(t, got.DueDate.Equal(want), "DueDate = %v, want %v", got.DueDate, want)
 }
 
 func TestGetTask_NotFound(t *testing.T) {
 	svc, _, _ := newTestService()
 	_, err := svc.GetTask(context.Background(), 999)
-	if !errors.Is(err, ErrNotFound) {
-		t.Fatalf("err = %v, want ErrNotFound", err)
-	}
+	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestUpdateTask_PartialPatch(t *testing.T) {
@@ -91,18 +67,10 @@ func TestUpdateTask_PartialPatch(t *testing.T) {
 	created, _ := svc.AddTask(ctx, NewTask{Title: "orig", Description: "desc", Priority: PriorityLow})
 
 	got, err := svc.UpdateTask(ctx, created.ID, TaskPatch{Priority: Set(PriorityHigh)})
-	if err != nil {
-		t.Fatalf("UpdateTask: %v", err)
-	}
-	if got.Title != "orig" {
-		t.Errorf("Title = %q, want unchanged orig", got.Title)
-	}
-	if got.Description != "desc" {
-		t.Errorf("Description = %q, want unchanged desc", got.Description)
-	}
-	if got.Priority != PriorityHigh {
-		t.Errorf("Priority = %q, want high", got.Priority)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "orig", got.Title)
+	assert.Equal(t, "desc", got.Description)
+	assert.Equal(t, PriorityHigh, got.Priority)
 }
 
 func TestUpdateTask_ClearDueDate(t *testing.T) {
@@ -112,12 +80,8 @@ func TestUpdateTask_ClearDueDate(t *testing.T) {
 	created, _ := svc.AddTask(ctx, NewTask{Title: "x", DueDate: &due})
 
 	got, err := svc.UpdateTask(ctx, created.ID, TaskPatch{DueDate: Set[*time.Time](nil)})
-	if err != nil {
-		t.Fatalf("UpdateTask: %v", err)
-	}
-	if got.DueDate != nil {
-		t.Errorf("DueDate = %v, want nil", got.DueDate)
-	}
+	require.NoError(t, err)
+	assert.Nil(t, got.DueDate)
 }
 
 func TestUpdateTask_ClearDescription(t *testing.T) {
@@ -126,12 +90,8 @@ func TestUpdateTask_ClearDescription(t *testing.T) {
 	created, _ := svc.AddTask(ctx, NewTask{Title: "x", Description: "desc"})
 
 	got, err := svc.UpdateTask(ctx, created.ID, TaskPatch{Description: Set("")})
-	if err != nil {
-		t.Fatalf("UpdateTask: %v", err)
-	}
-	if got.Description != "" {
-		t.Errorf("Description = %q, want empty", got.Description)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "", got.Description)
 }
 
 func TestUpdateTask_EmptyTitleRejected(t *testing.T) {
@@ -141,17 +101,13 @@ func TestUpdateTask_EmptyTitleRejected(t *testing.T) {
 
 	_, err := svc.UpdateTask(ctx, created.ID, TaskPatch{Title: Set("  ")})
 	var verr *ValidationError
-	if !errors.As(err, &verr) {
-		t.Fatalf("err = %v, want *ValidationError", err)
-	}
+	require.ErrorAs(t, err, &verr)
 }
 
 func TestUpdateTask_NotFound(t *testing.T) {
 	svc, _, _ := newTestService()
 	_, err := svc.UpdateTask(context.Background(), 999, TaskPatch{})
-	if !errors.Is(err, ErrNotFound) {
-		t.Fatalf("err = %v, want ErrNotFound", err)
-	}
+	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestStatusLifecycle(t *testing.T) {
@@ -161,36 +117,21 @@ func TestStatusLifecycle(t *testing.T) {
 
 	*clock = clock.Add(time.Hour)
 	started, err := svc.StartTask(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("StartTask: %v", err)
-	}
-	if started.Status != StatusInProgress {
-		t.Errorf("Status = %q, want in-progress", started.Status)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, StatusInProgress, started.Status)
 
 	*clock = clock.Add(time.Hour)
 	done, err := svc.CompleteTask(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("CompleteTask: %v", err)
-	}
-	if done.Status != StatusDone {
-		t.Errorf("Status = %q, want done", done.Status)
-	}
-	if done.CompletedAt == nil || !done.CompletedAt.Equal(*clock) {
-		t.Errorf("CompletedAt = %v, want %v", done.CompletedAt, clock)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, StatusDone, done.Status)
+	require.NotNil(t, done.CompletedAt)
+	assert.True(t, done.CompletedAt.Equal(*clock), "CompletedAt = %v, want %v", done.CompletedAt, clock)
 
 	*clock = clock.Add(time.Hour)
 	reopened, err := svc.ReopenTask(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("ReopenTask: %v", err)
-	}
-	if reopened.Status != StatusOpen {
-		t.Errorf("Status = %q, want open", reopened.Status)
-	}
-	if reopened.CompletedAt != nil {
-		t.Errorf("CompletedAt = %v, want nil after reopen", reopened.CompletedAt)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, StatusOpen, reopened.Status)
+	assert.Nil(t, reopened.CompletedAt)
 }
 
 func TestDeleteTask(t *testing.T) {
@@ -198,20 +139,15 @@ func TestDeleteTask(t *testing.T) {
 	svc, _, _ := newTestService()
 	created, _ := svc.AddTask(ctx, NewTask{Title: "x"})
 
-	if err := svc.DeleteTask(ctx, created.ID); err != nil {
-		t.Fatalf("DeleteTask: %v", err)
-	}
-	if _, err := svc.GetTask(ctx, created.ID); !errors.Is(err, ErrNotFound) {
-		t.Errorf("expected ErrNotFound after delete, got %v", err)
-	}
+	require.NoError(t, svc.DeleteTask(ctx, created.ID))
+	_, err := svc.GetTask(ctx, created.ID)
+	assert.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestDeleteTask_NotFound(t *testing.T) {
 	svc, _, _ := newTestService()
 	err := svc.DeleteTask(context.Background(), 999)
-	if !errors.Is(err, ErrNotFound) {
-		t.Fatalf("err = %v, want ErrNotFound", err)
-	}
+	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestListTasks_DefaultSort(t *testing.T) {
@@ -227,22 +163,12 @@ func TestListTasks_DefaultSort(t *testing.T) {
 	svc.StartTask(ctx, inProg.ID)
 
 	got, err := svc.ListTasks(ctx, TaskFilter{})
-	if err != nil {
-		t.Fatalf("ListTasks: %v", err)
-	}
-	if len(got) != 3 {
-		t.Fatalf("len(got) = %d, want 3", len(got))
-	}
+	require.NoError(t, err)
+	require.Len(t, got, 3)
 	// in-progress group first, then open group ordered by due date (nil last).
-	if got[0].ID != inProg.ID {
-		t.Errorf("got[0] = %q, want in-progress task first", got[0].Title)
-	}
-	if got[1].ID != open2.ID {
-		t.Errorf("got[1] = %q, want open-with-due-date second", got[1].Title)
-	}
-	if got[2].ID != open1.ID {
-		t.Errorf("got[2] = %q, want no-due-date task last", got[2].Title)
-	}
+	assert.Equal(t, inProg.ID, got[0].ID, "want in-progress task first")
+	assert.Equal(t, open2.ID, got[1].ID, "want open-with-due-date second")
+	assert.Equal(t, open1.ID, got[2].ID, "want no-due-date task last")
 }
 
 func TestListTasks_SortByPriority(t *testing.T) {
@@ -253,12 +179,10 @@ func TestListTasks_SortByPriority(t *testing.T) {
 	high, _ := svc.AddTask(ctx, NewTask{Title: "high", Priority: PriorityHigh})
 
 	got, err := svc.ListTasks(ctx, TaskFilter{SortBy: SortPriority})
-	if err != nil {
-		t.Fatalf("ListTasks: %v", err)
-	}
-	if got[0].ID != high.ID || got[1].ID != low.ID {
-		t.Errorf("sort by priority order wrong: %v", got)
-	}
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, high.ID, got[0].ID)
+	assert.Equal(t, low.ID, got[1].ID)
 }
 
 func TestListTasks_FilterByStatus(t *testing.T) {
@@ -271,12 +195,9 @@ func TestListTasks_FilterByStatus(t *testing.T) {
 
 	status := StatusDone
 	got, err := svc.ListTasks(ctx, TaskFilter{Status: &status})
-	if err != nil {
-		t.Fatalf("ListTasks: %v", err)
-	}
-	if len(got) != 1 || got[0].ID != done.ID {
-		t.Errorf("got = %v, want only done task", got)
-	}
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, done.ID, got[0].ID)
 }
 
 func TestListTasks_InvalidStatusFilter(t *testing.T) {
@@ -284,9 +205,8 @@ func TestListTasks_InvalidStatusFilter(t *testing.T) {
 	status := Status("bogus")
 	_, err := svc.ListTasks(context.Background(), TaskFilter{Status: &status})
 	var verr *ValidationError
-	if !errors.As(err, &verr) || verr.Field != "status" {
-		t.Fatalf("err = %v, want *ValidationError{Field: status}", err)
-	}
+	require.ErrorAs(t, err, &verr)
+	assert.Equal(t, "status", verr.Field)
 }
 
 func TestListTasks_InvalidPriorityFilter(t *testing.T) {
@@ -294,16 +214,14 @@ func TestListTasks_InvalidPriorityFilter(t *testing.T) {
 	priority := Priority("urgent")
 	_, err := svc.ListTasks(context.Background(), TaskFilter{Priority: &priority})
 	var verr *ValidationError
-	if !errors.As(err, &verr) || verr.Field != "priority" {
-		t.Fatalf("err = %v, want *ValidationError{Field: priority}", err)
-	}
+	require.ErrorAs(t, err, &verr)
+	assert.Equal(t, "priority", verr.Field)
 }
 
 func TestListTasks_InvalidSortKey(t *testing.T) {
 	svc, _, _ := newTestService()
 	_, err := svc.ListTasks(context.Background(), TaskFilter{SortBy: SortKey("bogus")})
 	var verr *ValidationError
-	if !errors.As(err, &verr) || verr.Field != "sort" {
-		t.Fatalf("err = %v, want *ValidationError{Field: sort}", err)
-	}
+	require.ErrorAs(t, err, &verr)
+	assert.Equal(t, "sort", verr.Field)
 }

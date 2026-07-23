@@ -2,10 +2,12 @@ package repository
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/gbchd/todo/internal/service/todo"
 )
@@ -14,9 +16,7 @@ func openTestRepo(t *testing.T) *SQLiteRepository {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "todo.db")
 	repo, err := Open(context.Background(), path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { repo.Close() })
 	return repo
 }
@@ -24,12 +24,8 @@ func openTestRepo(t *testing.T) *SQLiteRepository {
 func TestOpen_Migrates(t *testing.T) {
 	repo := openTestRepo(t)
 	var version int
-	if err := repo.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-		t.Fatalf("read user_version: %v", err)
-	}
-	if version != 1 {
-		t.Errorf("user_version = %d, want 1", version)
-	}
+	require.NoError(t, repo.db.QueryRow("PRAGMA user_version").Scan(&version))
+	assert.Equal(t, 1, version)
 }
 
 func TestOpen_ReopenIsIdempotent(t *testing.T) {
@@ -37,31 +33,21 @@ func TestOpen_ReopenIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 
 	repo1, err := Open(ctx, path)
-	if err != nil {
-		t.Fatalf("first Open: %v", err)
-	}
+	require.NoError(t, err, "first Open")
 	created, err := repo1.Create(ctx, todo.Task{
 		Title: "persisted", Status: todo.StatusOpen, Priority: todo.PriorityNone,
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
+	require.NoError(t, err)
 	repo1.Close()
 
 	repo2, err := Open(ctx, path)
-	if err != nil {
-		t.Fatalf("second Open: %v", err)
-	}
+	require.NoError(t, err, "second Open")
 	defer repo2.Close()
 
 	got, err := repo2.Get(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("Get after reopen: %v", err)
-	}
-	if got.Title != "persisted" {
-		t.Errorf("Title = %q, want persisted", got.Title)
-	}
+	require.NoError(t, err, "Get after reopen")
+	assert.Equal(t, "persisted", got.Title)
 }
 
 func TestCreateGetRoundTrip(t *testing.T) {
@@ -81,37 +67,26 @@ func TestCreateGetRoundTrip(t *testing.T) {
 	}
 
 	created, err := repo.Create(ctx, in)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if created.ID == 0 {
-		t.Fatalf("expected non-zero id")
-	}
+	require.NoError(t, err)
+	assert.NotZero(t, created.ID)
 
 	got, err := repo.Get(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if got.Title != in.Title || got.Description != in.Description || got.Status != in.Status || got.Priority != in.Priority {
-		t.Errorf("got = %+v, want fields matching %+v", got, in)
-	}
-	if got.DueDate == nil || !got.DueDate.Equal(due) {
-		t.Errorf("DueDate = %v, want %v", got.DueDate, due)
-	}
-	if !got.CreatedAt.Equal(now) || !got.UpdatedAt.Equal(now) {
-		t.Errorf("timestamps = %v/%v, want %v", got.CreatedAt, got.UpdatedAt, now)
-	}
-	if got.CompletedAt != nil {
-		t.Errorf("CompletedAt = %v, want nil", got.CompletedAt)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, in.Title, got.Title)
+	assert.Equal(t, in.Description, got.Description)
+	assert.Equal(t, in.Status, got.Status)
+	assert.Equal(t, in.Priority, got.Priority)
+	require.NotNil(t, got.DueDate)
+	assert.True(t, got.DueDate.Equal(due), "DueDate = %v, want %v", got.DueDate, due)
+	assert.True(t, got.CreatedAt.Equal(now), "CreatedAt = %v, want %v", got.CreatedAt, now)
+	assert.True(t, got.UpdatedAt.Equal(now), "UpdatedAt = %v, want %v", got.UpdatedAt, now)
+	assert.Nil(t, got.CompletedAt)
 }
 
 func TestGet_NotFound(t *testing.T) {
 	repo := openTestRepo(t)
 	_, err := repo.Get(context.Background(), 999)
-	if !errors.Is(err, todo.ErrNotFound) {
-		t.Fatalf("err = %v, want ErrNotFound", err)
-	}
+	require.ErrorIs(t, err, todo.ErrNotFound)
 }
 
 func TestUpdate(t *testing.T) {
@@ -130,23 +105,17 @@ func TestUpdate(t *testing.T) {
 	created.CompletedAt = &completedAt
 
 	updated, err := repo.Update(ctx, created)
-	if err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-	if updated.Title != "changed" || updated.Status != todo.StatusDone {
-		t.Errorf("Update didn't persist: %+v", updated)
-	}
-	if updated.CompletedAt == nil || !updated.CompletedAt.Equal(completedAt) {
-		t.Errorf("CompletedAt = %v, want %v", updated.CompletedAt, completedAt)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "changed", updated.Title)
+	assert.Equal(t, todo.StatusDone, updated.Status)
+	require.NotNil(t, updated.CompletedAt)
+	assert.True(t, updated.CompletedAt.Equal(completedAt), "CompletedAt = %v, want %v", updated.CompletedAt, completedAt)
 }
 
 func TestUpdate_NotFound(t *testing.T) {
 	repo := openTestRepo(t)
 	_, err := repo.Update(context.Background(), todo.Task{ID: 999, Title: "x", CreatedAt: time.Now(), UpdatedAt: time.Now()})
-	if !errors.Is(err, todo.ErrNotFound) {
-		t.Fatalf("err = %v, want ErrNotFound", err)
-	}
+	require.ErrorIs(t, err, todo.ErrNotFound)
 }
 
 func TestDelete(t *testing.T) {
@@ -154,24 +123,17 @@ func TestDelete(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	created, err := repo.Create(ctx, todo.Task{Title: "x", Status: todo.StatusOpen, Priority: todo.PriorityNone, CreatedAt: now, UpdatedAt: now})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
+	require.NoError(t, err)
 
-	if err := repo.Delete(ctx, created.ID); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	if _, err := repo.Get(ctx, created.ID); !errors.Is(err, todo.ErrNotFound) {
-		t.Errorf("Get after delete: %v, want ErrNotFound", err)
-	}
+	require.NoError(t, repo.Delete(ctx, created.ID))
+	_, err = repo.Get(ctx, created.ID)
+	assert.ErrorIs(t, err, todo.ErrNotFound)
 }
 
 func TestDelete_NotFound(t *testing.T) {
 	repo := openTestRepo(t)
 	err := repo.Delete(context.Background(), 999)
-	if !errors.Is(err, todo.ErrNotFound) {
-		t.Fatalf("err = %v, want ErrNotFound", err)
-	}
+	require.ErrorIs(t, err, todo.ErrNotFound)
 }
 
 func TestList_Filters(t *testing.T) {
@@ -184,12 +146,9 @@ func TestList_Filters(t *testing.T) {
 
 	status := todo.StatusOpen
 	got, err := repo.List(ctx, todo.TaskFilter{Status: &status})
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(got) != 1 || got[0].ID != openHigh.ID {
-		t.Errorf("got = %v, want only open-high", got)
-	}
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, openHigh.ID, got[0].ID)
 }
 
 func TestList_DueDateRange(t *testing.T) {
@@ -206,19 +165,14 @@ func TestList_DueDateRange(t *testing.T) {
 	lateTask := base
 	lateTask.Title, lateTask.DueDate = "late", &late
 	late1, err := repo.Create(ctx, lateTask)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
+	require.NoError(t, err)
 	noDueTask := base
 	noDueTask.Title = "no-due"
 	repo.Create(ctx, noDueTask)
 
 	cutoff := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	got, err := repo.List(ctx, todo.TaskFilter{DueAfter: &cutoff})
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(got) != 1 || got[0].ID != late1.ID {
-		t.Errorf("got = %v, want only late task", got)
-	}
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, late1.ID, got[0].ID)
 }

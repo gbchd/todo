@@ -3,10 +3,11 @@ package tui
 import (
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/gbchd/todo/internal/repository"
 	"github.com/gbchd/todo/internal/service/todo"
@@ -16,18 +17,14 @@ func newTestModel(t *testing.T, layout layoutKind) model {
 	t.Helper()
 	ctx := context.Background()
 	repo, err := repository.Open(ctx, filepath.Join(t.TempDir(), "todo.db"))
-	if err != nil {
-		t.Fatalf("open repo: %v", err)
-	}
+	require.NoError(t, err, "open repo")
 	t.Cleanup(func() { repo.Close() })
 	svc := todo.NewService(repo)
 
-	if _, err := svc.AddTask(ctx, todo.NewTask{Title: "first task", Priority: todo.PriorityHigh}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	if _, err := svc.AddTask(ctx, todo.NewTask{Title: "second task"}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
+	_, err = svc.AddTask(ctx, todo.NewTask{Title: "first task", Priority: todo.PriorityHigh})
+	require.NoError(t, err, "seed")
+	_, err = svc.AddTask(ctx, todo.NewTask{Title: "second task"})
+	require.NoError(t, err, "seed")
 
 	return newModel(ctx, svc, layout)
 }
@@ -66,182 +63,117 @@ func send(t *testing.T, m model, keys ...string) model {
 
 func TestModel_NavigateCursor(t *testing.T) {
 	m := newTestModel(t, layoutList)
-	if m.cursor != 0 {
-		t.Fatalf("initial cursor = %d, want 0", m.cursor)
-	}
+	require.Equal(t, 0, m.cursor, "initial cursor")
 	m = send(t, m, "down")
-	if m.cursor != 1 {
-		t.Errorf("cursor after down = %d, want 1", m.cursor)
-	}
+	assert.Equal(t, 1, m.cursor, "cursor after down")
 	m = send(t, m, "down") // clamps at last index
-	if m.cursor != 1 {
-		t.Errorf("cursor after second down = %d, want clamped 1", m.cursor)
-	}
+	assert.Equal(t, 1, m.cursor, "cursor after second down, want clamped")
 	m = send(t, m, "up")
-	if m.cursor != 0 {
-		t.Errorf("cursor after up = %d, want 0", m.cursor)
-	}
+	assert.Equal(t, 0, m.cursor, "cursor after up")
 }
 
 func TestModel_EnterOpensDetailEscBack(t *testing.T) {
 	m := newTestModel(t, layoutList)
 	m = send(t, m, "enter")
-	if m.mode != modeDetail {
-		t.Fatalf("mode = %v, want modeDetail", m.mode)
-	}
+	require.Equal(t, modeDetail, m.mode)
 	m = send(t, m, "esc")
-	if m.mode != modeBrowse {
-		t.Fatalf("mode = %v, want modeBrowse", m.mode)
-	}
+	require.Equal(t, modeBrowse, m.mode)
 }
 
 func TestModel_AddTask(t *testing.T) {
 	m := newTestModel(t, layoutList)
 	m = send(t, m, "a")
-	if m.mode != modeForm {
-		t.Fatalf("mode = %v, want modeForm", m.mode)
-	}
-	if m.form.editingID != 0 {
-		t.Errorf("editingID = %d, want 0 for add", m.form.editingID)
-	}
+	require.Equal(t, modeForm, m.mode)
+	assert.Zero(t, m.form.editingID, "editingID want 0 for add")
 
 	for _, r := range "third task" {
 		m = send(t, m, string(r))
 	}
 	m = send(t, m, "enter")
 
-	if m.mode != modeBrowse {
-		t.Fatalf("mode after save = %v, want modeBrowse", m.mode)
-	}
-	if len(m.tasks) != 3 {
-		t.Fatalf("len(tasks) = %d, want 3", len(m.tasks))
-	}
+	require.Equal(t, modeBrowse, m.mode, "mode after save")
+	require.Len(t, m.tasks, 3)
 }
 
 func TestModel_AddTask_EmptyTitleRejected(t *testing.T) {
 	m := newTestModel(t, layoutList)
 	m = send(t, m, "a")
 	m = send(t, m, "enter")
-	if m.mode != modeForm {
-		t.Fatalf("mode = %v, want still modeForm on validation error", m.mode)
-	}
-	if m.form.err == "" {
-		t.Errorf("expected form error for empty title")
-	}
+	require.Equal(t, modeForm, m.mode, "want still modeForm on validation error")
+	assert.NotEmpty(t, m.form.err, "expected form error for empty title")
 }
 
 func TestModel_EditCyclePriority(t *testing.T) {
 	m := newTestModel(t, layoutList)
 	m = send(t, m, "e")
-	if m.mode != modeForm {
-		t.Fatalf("mode = %v, want modeForm", m.mode)
-	}
+	require.Equal(t, modeForm, m.mode)
 	m = send(t, m, "tab", "tab") // title -> description -> priority
-	if m.form.focus != fieldPriority {
-		t.Fatalf("focus = %v, want fieldPriority", m.form.focus)
-	}
+	require.Equal(t, fieldPriority, m.form.focus)
 	before := m.form.priority
 	m = send(t, m, "right")
-	if m.form.priority == before {
-		t.Errorf("priority did not change after right")
-	}
+	assert.NotEqual(t, before, m.form.priority, "priority did not change after right")
 }
 
 func TestModel_DeleteConfirmFlow(t *testing.T) {
 	m := newTestModel(t, layoutList)
 	m = send(t, m, "d")
-	if m.mode != modeConfirmDelete {
-		t.Fatalf("mode = %v, want modeConfirmDelete", m.mode)
-	}
+	require.Equal(t, modeConfirmDelete, m.mode)
 	m = send(t, m, "n")
-	if m.mode != modeBrowse {
-		t.Fatalf("mode after decline = %v, want modeBrowse", m.mode)
-	}
-	if len(m.tasks) != 2 {
-		t.Fatalf("len(tasks) = %d, want 2 (unchanged)", len(m.tasks))
-	}
+	require.Equal(t, modeBrowse, m.mode, "mode after decline")
+	require.Len(t, m.tasks, 2, "unchanged")
 
 	m = send(t, m, "d", "y")
-	if len(m.tasks) != 1 {
-		t.Fatalf("len(tasks) = %d, want 1 after confirmed delete", len(m.tasks))
-	}
+	require.Len(t, m.tasks, 1, "after confirmed delete")
 }
 
 func TestModel_AdvanceStatus(t *testing.T) {
 	m := newTestModel(t, layoutList)
 	t0, ok := m.selectedTask()
-	if !ok || t0.Status != todo.StatusOpen {
-		t.Fatalf("expected first task open, got %+v", t0)
-	}
+	require.True(t, ok)
+	require.Equal(t, todo.StatusOpen, t0.Status, "expected first task open, got %+v", t0)
 
 	m = send(t, m, " ")
 	t1, _ := m.selectedTask()
-	if t1.Status != todo.StatusInProgress {
-		t.Errorf("status after 1 advance = %v, want in-progress", t1.Status)
-	}
+	assert.Equal(t, todo.StatusInProgress, t1.Status, "status after 1 advance")
 
 	m = send(t, m, " ")
 	t2, _ := m.selectedTask()
-	if t2.Status != todo.StatusDone {
-		t.Errorf("status after 2 advances = %v, want done", t2.Status)
-	}
+	assert.Equal(t, todo.StatusDone, t2.Status, "status after 2 advances")
 
 	m = send(t, m, " ")
 	t3, _ := m.selectedTask()
-	if t3.Status != todo.StatusOpen {
-		t.Errorf("status after 3 advances = %v, want open (wrapped)", t3.Status)
-	}
+	assert.Equal(t, todo.StatusOpen, t3.Status, "status after 3 advances, want wrapped")
 }
 
 func TestModel_Kanban_ColumnNavigation(t *testing.T) {
 	m := newTestModel(t, layoutKanban)
-	if m.column != 0 {
-		t.Fatalf("initial column = %d, want 0", m.column)
-	}
+	require.Equal(t, 0, m.column, "initial column")
 	m = send(t, m, "right")
-	if m.column != 1 {
-		t.Errorf("column after right = %d, want 1", m.column)
-	}
+	assert.Equal(t, 1, m.column, "column after right")
 	m = send(t, m, "left")
-	if m.column != 0 {
-		t.Errorf("column after left = %d, want 0", m.column)
-	}
+	assert.Equal(t, 0, m.column, "column after left")
 }
 
 func TestModel_Kanban_MoveCardColumn(t *testing.T) {
 	m := newTestModel(t, layoutKanban)
 	task, ok := m.selectedTask()
-	if !ok {
-		t.Fatal("expected a selected task in open column")
-	}
+	require.True(t, ok, "expected a selected task in open column")
 
 	m = send(t, m, "L")
-	if m.column != 1 {
-		t.Fatalf("column after L = %d, want 1 (in-progress)", m.column)
-	}
+	require.Equal(t, 1, m.column, "column after L, want in-progress")
 
 	moved, err := m.svc.GetTask(m.ctx, task.ID)
-	if err != nil {
-		t.Fatalf("GetTask: %v", err)
-	}
-	if moved.Status != todo.StatusInProgress {
-		t.Errorf("moved task status = %v, want in-progress", moved.Status)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, todo.StatusInProgress, moved.Status)
 }
 
 func TestModel_Quit(t *testing.T) {
 	m := newTestModel(t, layoutList)
 	next, cmd := m.Update(key("q"))
 	m2 := next.(model)
-	if !m2.quit {
-		t.Fatalf("expected quit = true")
-	}
-	if cmd == nil {
-		t.Fatalf("expected tea.Quit command")
-	}
-	if m2.View() != "" {
-		t.Errorf("View() after quit should be empty")
-	}
+	require.True(t, m2.quit)
+	require.NotNil(t, cmd, "expected tea.Quit command")
+	assert.Empty(t, m2.View(), "View() after quit should be empty")
 }
 
 func TestView_AllLayoutsRenderTaskTitles(t *testing.T) {
@@ -249,9 +181,7 @@ func TestView_AllLayoutsRenderTaskTitles(t *testing.T) {
 		m := newTestModel(t, layout)
 		m.width, m.height = 80, 24
 		out := m.View()
-		if !strings.Contains(out, "first task") {
-			t.Errorf("layout %v: View() missing task title, got:\n%s", layout, out)
-		}
+		assert.Contains(t, out, "first task", "layout %v: View() missing task title", layout)
 	}
 }
 
@@ -260,8 +190,6 @@ func TestParseLayout(t *testing.T) {
 		"list": layoutList, "split": layoutSplit, "kanban": layoutKanban, "": layoutList, "bogus": layoutList,
 	}
 	for in, want := range cases {
-		if got := ParseLayout(in); got != want {
-			t.Errorf("ParseLayout(%q) = %v, want %v", in, got, want)
-		}
+		assert.Equal(t, want, ParseLayout(in), "ParseLayout(%q)", in)
 	}
 }
