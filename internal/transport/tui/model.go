@@ -105,7 +105,7 @@ func (m *model) reload() {
 			}
 		}
 	}
-	m.cursor = clamp(m.cursor, 0, m.visibleCount()-1)
+	m.cursor = clamp(m.cursor, m.visibleCount()-1)
 }
 
 func (m model) size() (int, int) {
@@ -155,12 +155,12 @@ func (m model) selectedTask() (todo.Task, bool) {
 	return m.tasks[m.cursor], true
 }
 
-func clamp(v, lo, hi int) int {
-	if hi < lo {
-		return lo
+func clamp(v, hi int) int {
+	if hi < 0 {
+		return 0
 	}
-	if v < lo {
-		return lo
+	if v < 0 {
+		return 0
 	}
 	if v > hi {
 		return hi
@@ -174,13 +174,13 @@ func (m *model) moveCursor(delta int) {
 		m.cursor = 0
 		return
 	}
-	m.cursor = clamp(m.cursor+delta, 0, n-1)
+	m.cursor = clamp(m.cursor+delta, n-1)
 }
 
 func (m *model) moveColumn(delta int) {
-	m.column = clamp(m.column+delta, 0, 2)
+	m.column = clamp(m.column+delta, 2)
 	n := len(m.groupedByStatus()[m.column])
-	m.cursor = clamp(m.cursor, 0, n-1)
+	m.cursor = clamp(m.cursor, n-1)
 }
 
 func nextStatus(s todo.Status) todo.Status {
@@ -213,7 +213,7 @@ func (m *model) advanceStatus(t todo.Task) {
 	if m.layout == layoutKanban {
 		m.column = columnIndex(next)
 		n := len(m.groupedByStatus()[m.column])
-		m.cursor = clamp(m.cursor, 0, n-1)
+		m.cursor = clamp(m.cursor, n-1)
 	}
 }
 
@@ -222,7 +222,7 @@ func (m *model) moveCardColumn(delta int) {
 	if !ok {
 		return
 	}
-	target := clamp(m.column+delta, 0, 2)
+	target := clamp(m.column+delta, 2)
 	if target == m.column {
 		return
 	}
@@ -233,7 +233,7 @@ func (m *model) moveCardColumn(delta int) {
 	m.reload()
 	m.column = target
 	n := len(m.groupedByStatus()[m.column])
-	m.cursor = clamp(m.cursor, 0, n-1)
+	m.cursor = clamp(m.cursor, n-1)
 }
 
 func (m model) View() string {

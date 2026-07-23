@@ -81,6 +81,9 @@ func (f *form) setFocus(field formField) {
 		f.description.Focus()
 	case fieldDueDate:
 		f.dueDate.Focus()
+	case fieldPriority, fieldCount:
+		// fieldPriority has no text input to focus (see cyclePriority);
+		// fieldCount is a sentinel, never itself a focus target.
 	}
 }
 
@@ -131,6 +134,9 @@ func (f form) update(msg tea.Msg) (form, tea.Cmd) {
 		f.description, cmd = f.description.Update(msg)
 	case fieldDueDate:
 		f.dueDate, cmd = f.dueDate.Update(msg)
+	case fieldPriority, fieldCount:
+		// fieldPriority is changed via cyclePriority (←/→), not key routing;
+		// fieldCount is a sentinel, never itself a focus target.
 	}
 	return f, cmd
 }

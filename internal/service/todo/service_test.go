@@ -9,17 +9,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newTestService() (*Service, *fakeRepository, *time.Time) {
+func newTestService() (*Service, *time.Time) {
 	repo := newFakeRepository()
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 	clock := &now
 	svc := &Service{repo: repo, now: func() time.Time { return *clock }}
-	return svc, repo, clock
+	return svc, clock
 }
 
 func TestAddTask(t *testing.T) {
 	ctx := context.Background()
-	svc, _, now := newTestService()
+	svc, now := newTestService()
 
 	got, err := svc.AddTask(ctx, NewTask{Title: "Buy milk"})
 	require.NoError(t, err)
@@ -30,7 +30,7 @@ func TestAddTask(t *testing.T) {
 }
 
 func TestAddTask_EmptyTitle(t *testing.T) {
-	svc, _, _ := newTestService()
+	svc, _ := newTestService()
 	_, err := svc.AddTask(context.Background(), NewTask{Title: "   "})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
@@ -38,7 +38,7 @@ func TestAddTask_EmptyTitle(t *testing.T) {
 }
 
 func TestAddTask_InvalidPriority(t *testing.T) {
-	svc, _, _ := newTestService()
+	svc, _ := newTestService()
 	_, err := svc.AddTask(context.Background(), NewTask{Title: "x", Priority: "urgent"})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
@@ -46,7 +46,7 @@ func TestAddTask_InvalidPriority(t *testing.T) {
 }
 
 func TestAddTask_NormalizesDueDate(t *testing.T) {
-	svc, _, _ := newTestService()
+	svc, _ := newTestService()
 	due := time.Date(2026, 8, 1, 15, 30, 0, 0, time.FixedZone("x", 3600))
 	got, err := svc.AddTask(context.Background(), NewTask{Title: "x", DueDate: &due})
 	require.NoError(t, err)
@@ -56,14 +56,14 @@ func TestAddTask_NormalizesDueDate(t *testing.T) {
 }
 
 func TestGetTask_NotFound(t *testing.T) {
-	svc, _, _ := newTestService()
+	svc, _ := newTestService()
 	_, err := svc.GetTask(context.Background(), 999)
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestUpdateTask_PartialPatch(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := newTestService()
+	svc, _ := newTestService()
 	created, _ := svc.AddTask(ctx, NewTask{Title: "orig", Description: "desc", Priority: PriorityLow})
 
 	got, err := svc.UpdateTask(ctx, created.ID, TaskPatch{Priority: Set(PriorityHigh)})
@@ -75,7 +75,7 @@ func TestUpdateTask_PartialPatch(t *testing.T) {
 
 func TestUpdateTask_ClearDueDate(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := newTestService()
+	svc, _ := newTestService()
 	due := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	created, _ := svc.AddTask(ctx, NewTask{Title: "x", DueDate: &due})
 
@@ -86,7 +86,7 @@ func TestUpdateTask_ClearDueDate(t *testing.T) {
 
 func TestUpdateTask_ClearDescription(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := newTestService()
+	svc, _ := newTestService()
 	created, _ := svc.AddTask(ctx, NewTask{Title: "x", Description: "desc"})
 
 	got, err := svc.UpdateTask(ctx, created.ID, TaskPatch{Description: Set("")})
@@ -96,7 +96,7 @@ func TestUpdateTask_ClearDescription(t *testing.T) {
 
 func TestUpdateTask_EmptyTitleRejected(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := newTestService()
+	svc, _ := newTestService()
 	created, _ := svc.AddTask(ctx, NewTask{Title: "x"})
 
 	_, err := svc.UpdateTask(ctx, created.ID, TaskPatch{Title: Set("  ")})
@@ -105,14 +105,14 @@ func TestUpdateTask_EmptyTitleRejected(t *testing.T) {
 }
 
 func TestUpdateTask_NotFound(t *testing.T) {
-	svc, _, _ := newTestService()
+	svc, _ := newTestService()
 	_, err := svc.UpdateTask(context.Background(), 999, TaskPatch{})
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestStatusLifecycle(t *testing.T) {
 	ctx := context.Background()
-	svc, _, clock := newTestService()
+	svc, clock := newTestService()
 	created, _ := svc.AddTask(ctx, NewTask{Title: "x"})
 
 	*clock = clock.Add(time.Hour)
@@ -136,7 +136,7 @@ func TestStatusLifecycle(t *testing.T) {
 
 func TestDeleteTask(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := newTestService()
+	svc, _ := newTestService()
 	created, _ := svc.AddTask(ctx, NewTask{Title: "x"})
 
 	require.NoError(t, svc.DeleteTask(ctx, created.ID))
@@ -145,14 +145,14 @@ func TestDeleteTask(t *testing.T) {
 }
 
 func TestDeleteTask_NotFound(t *testing.T) {
-	svc, _, _ := newTestService()
+	svc, _ := newTestService()
 	err := svc.DeleteTask(context.Background(), 999)
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestListTasks_DefaultSort(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := newTestService()
+	svc, _ := newTestService()
 
 	dueLater := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	dueSoon := time.Date(2026, 7, 25, 0, 0, 0, 0, time.UTC)
@@ -173,7 +173,7 @@ func TestListTasks_DefaultSort(t *testing.T) {
 
 func TestListTasks_SortByPriority(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := newTestService()
+	svc, _ := newTestService()
 
 	low, _ := svc.AddTask(ctx, NewTask{Title: "low", Priority: PriorityLow})
 	high, _ := svc.AddTask(ctx, NewTask{Title: "high", Priority: PriorityHigh})
@@ -187,7 +187,7 @@ func TestListTasks_SortByPriority(t *testing.T) {
 
 func TestListTasks_FilterByStatus(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := newTestService()
+	svc, _ := newTestService()
 
 	svc.AddTask(ctx, NewTask{Title: "open"})
 	done, _ := svc.AddTask(ctx, NewTask{Title: "done"})
@@ -201,7 +201,7 @@ func TestListTasks_FilterByStatus(t *testing.T) {
 }
 
 func TestListTasks_InvalidStatusFilter(t *testing.T) {
-	svc, _, _ := newTestService()
+	svc, _ := newTestService()
 	status := Status("bogus")
 	_, err := svc.ListTasks(context.Background(), TaskFilter{Status: &status})
 	var verr *ValidationError
@@ -210,7 +210,7 @@ func TestListTasks_InvalidStatusFilter(t *testing.T) {
 }
 
 func TestListTasks_InvalidPriorityFilter(t *testing.T) {
-	svc, _, _ := newTestService()
+	svc, _ := newTestService()
 	priority := Priority("urgent")
 	_, err := svc.ListTasks(context.Background(), TaskFilter{Priority: &priority})
 	var verr *ValidationError
@@ -219,7 +219,7 @@ func TestListTasks_InvalidPriorityFilter(t *testing.T) {
 }
 
 func TestListTasks_InvalidSortKey(t *testing.T) {
-	svc, _, _ := newTestService()
+	svc, _ := newTestService()
 	_, err := svc.ListTasks(context.Background(), TaskFilter{SortBy: SortKey("bogus")})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)

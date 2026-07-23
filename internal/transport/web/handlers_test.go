@@ -37,7 +37,7 @@ func doJSON(t *testing.T, mux http.Handler, method, path string, body any) *http
 	} else {
 		reader = bytes.NewReader(nil)
 	}
-	req := httptest.NewRequest(method, path, reader)
+	req := httptest.NewRequestWithContext(context.Background(), method, path, reader)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	return rec

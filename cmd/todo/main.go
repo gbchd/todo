@@ -17,15 +17,18 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
+		return 1
 	}
 
-	code := cli.Run(ctx, os.Args, os.Stdin, os.Stdout, os.Stderr, cfg, tui.Run, web.Run)
-	os.Exit(code)
+	return cli.Run(ctx, os.Args, os.Stdin, os.Stdout, os.Stderr, cfg, tui.Run, web.Run)
 }

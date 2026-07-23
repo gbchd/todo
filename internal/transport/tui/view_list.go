@@ -49,13 +49,7 @@ func (m model) viewList() string {
 		}
 	case modeConfirmDelete:
 		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, viewConfirm(m.pendingDeleteID))
+	case modeBrowse:
 	}
 	return background
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

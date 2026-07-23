@@ -56,6 +56,7 @@ func (m model) viewKanban() string {
 		}
 	case modeConfirmDelete:
 		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, viewConfirm(m.pendingDeleteID))
+	case modeBrowse:
 	}
 	return background
 }

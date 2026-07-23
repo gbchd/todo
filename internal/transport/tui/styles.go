@@ -7,7 +7,6 @@ var (
 	colorBlue   = lipgloss.Color("39")
 	colorYellow = lipgloss.Color("221")
 	colorRed    = lipgloss.Color("203")
-	colorGreen  = lipgloss.Color("78")
 
 	titleBarStyle = lipgloss.NewStyle().
 			Bold(true).

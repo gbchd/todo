@@ -24,7 +24,7 @@ func openTestRepo(t *testing.T) *SQLiteRepository {
 func TestOpen_Migrates(t *testing.T) {
 	repo := openTestRepo(t)
 	var version int
-	require.NoError(t, repo.db.QueryRow("PRAGMA user_version").Scan(&version))
+	require.NoError(t, repo.db.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version))
 	assert.Equal(t, 1, version)
 }
 

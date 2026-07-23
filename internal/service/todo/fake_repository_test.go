@@ -16,14 +16,14 @@ func newFakeRepository() *fakeRepository {
 	return &fakeRepository{tasks: make(map[int64]Task)}
 }
 
-func (r *fakeRepository) Create(ctx context.Context, t Task) (Task, error) {
+func (r *fakeRepository) Create(_ context.Context, t Task) (Task, error) {
 	r.nextID++
 	t.ID = r.nextID
 	r.tasks[t.ID] = t
 	return t, nil
 }
 
-func (r *fakeRepository) Get(ctx context.Context, id int64) (Task, error) {
+func (r *fakeRepository) Get(_ context.Context, id int64) (Task, error) {
 	t, ok := r.tasks[id]
 	if !ok {
 		return Task{}, ErrNotFound
@@ -31,7 +31,7 @@ func (r *fakeRepository) Get(ctx context.Context, id int64) (Task, error) {
 	return t, nil
 }
 
-func (r *fakeRepository) Update(ctx context.Context, t Task) (Task, error) {
+func (r *fakeRepository) Update(_ context.Context, t Task) (Task, error) {
 	if _, ok := r.tasks[t.ID]; !ok {
 		return Task{}, ErrNotFound
 	}
@@ -39,7 +39,7 @@ func (r *fakeRepository) Update(ctx context.Context, t Task) (Task, error) {
 	return t, nil
 }
 
-func (r *fakeRepository) Delete(ctx context.Context, id int64) error {
+func (r *fakeRepository) Delete(_ context.Context, id int64) error {
 	if _, ok := r.tasks[id]; !ok {
 		return ErrNotFound
 	}
@@ -47,7 +47,7 @@ func (r *fakeRepository) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (r *fakeRepository) List(ctx context.Context, filter TaskFilter) ([]Task, error) {
+func (r *fakeRepository) List(_ context.Context, filter TaskFilter) ([]Task, error) {
 	var out []Task
 	for _, t := range r.tasks {
 		if filter.Status != nil && t.Status != *filter.Status {

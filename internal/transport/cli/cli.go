@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -46,7 +47,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	root := buildRoot(svc, cfg, stdin, stdout, stderr, color, runTUI, runServe)
 
 	if err := root.Run(ctx, args); err != nil {
-		if ec, ok := err.(tcli.ExitCoder); ok {
+		var ec tcli.ExitCoder
+		if errors.As(err, &ec) {
 			return ec.ExitCode()
 		}
 		fmt.Fprintln(stderr, err)
