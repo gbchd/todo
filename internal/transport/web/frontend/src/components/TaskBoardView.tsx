@@ -1,7 +1,7 @@
 import { useState, type DragEvent } from "react";
 import type { Status, Task } from "@/lib/types";
 import { api } from "@/lib/api";
-import { priorityClass } from "@/lib/format";
+import { priorityBadgeClass } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const COLUMNS: { status: Status; label: string }[] = [
@@ -9,6 +9,13 @@ const COLUMNS: { status: Status; label: string }[] = [
   { status: "in-progress", label: "In Progress" },
   { status: "done", label: "Done" },
 ];
+
+const PRIORITY_BAR_CLASS: Record<Task["priority"], string> = {
+  high: "bg-red-500",
+  medium: "bg-amber-500",
+  low: "bg-sky-500",
+  none: "bg-transparent",
+};
 
 interface TaskBoardViewProps {
   tasks: Task[];
@@ -36,8 +43,8 @@ export function TaskBoardView({ tasks, onSelect, onMoved }: TaskBoardViewProps) 
           <div
             key={status}
             className={cn(
-              "min-h-48 rounded-lg border bg-card p-3 transition-colors",
-              dragOver === status && "outline-2 outline-dashed outline-ring"
+              "min-h-48 rounded-lg border bg-muted/40 p-3 transition-colors",
+              dragOver === status && "border-primary/50 bg-primary/5 outline-2 outline-dashed outline-primary/40"
             )}
             onDragOver={(e) => {
               e.preventDefault();
@@ -46,26 +53,45 @@ export function TaskBoardView({ tasks, onSelect, onMoved }: TaskBoardViewProps) 
             onDragLeave={() => setDragOver(null)}
             onDrop={(e) => handleDrop(status, e)}
           >
-            <h2 className="mb-2 text-sm font-medium text-muted-foreground">
-              {label} ({columnTasks.length})
+            <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
+              {label}
+              <span className="rounded-full bg-background px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
+                {columnTasks.length}
+              </span>
             </h2>
-            {columnTasks.map((t) => (
-              <div
-                key={t.id}
-                draggable
-                onDragStart={(e) => e.dataTransfer.setData("text/plain", String(t.id))}
-                onClick={() => onSelect(t.id)}
-                className="mb-2 cursor-grab rounded-md border bg-background p-2 active:cursor-grabbing"
-              >
-                <div className="font-medium">
-                  #{t.id} {t.title}
+            <div className="space-y-2">
+              {columnTasks.map((t) => (
+                <div
+                  key={t.id}
+                  draggable
+                  onDragStart={(e) => e.dataTransfer.setData("text/plain", String(t.id))}
+                  onClick={() => onSelect(t.id)}
+                  className="flex cursor-grab overflow-hidden rounded-md border bg-card shadow-sm transition-shadow hover:shadow-md active:cursor-grabbing"
+                >
+                  <div className={cn("w-1 shrink-0", PRIORITY_BAR_CLASS[t.priority])} />
+                  <div className="min-w-0 flex-1 p-2.5">
+                    <div
+                      className={cn(
+                        "font-medium",
+                        status === "done" && "text-muted-foreground line-through"
+                      )}
+                    >
+                      <span className="text-muted-foreground">#{t.id}</span> {t.title}
+                    </div>
+                    {(t.priority !== "none" || t.due_date) && (
+                      <div className="mt-1.5 flex items-center gap-2 text-xs">
+                        {t.priority !== "none" && (
+                          <span className={cn("rounded-full px-1.5 py-0.5 capitalize", priorityBadgeClass(t.priority))}>
+                            {t.priority}
+                          </span>
+                        )}
+                        {t.due_date && <span className="text-muted-foreground">due {t.due_date}</span>}
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div className={cn("text-xs", priorityClass(t.priority))}>
-                  {t.priority}
-                  {t.due_date ? ` · due ${t.due_date}` : ""}
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         );
       })}

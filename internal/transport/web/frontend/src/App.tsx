@@ -27,9 +27,9 @@ export default function App() {
     <div className="min-h-screen">
       <Navbar view={view} onViewChange={setView} onAddClick={() => setAddOpen(true)} />
 
-      <main className="mx-auto max-w-5xl p-6">
+      <main className="mx-auto max-w-7xl p-6">
         {view === "list" ? (
-          <TaskListView tasks={tasks} onSelect={setDetailId} />
+          <TaskListView tasks={tasks} onSelect={setDetailId} onMoved={refresh} />
         ) : (
           <TaskBoardView tasks={tasks} onSelect={setDetailId} onMoved={refresh} />
         )}

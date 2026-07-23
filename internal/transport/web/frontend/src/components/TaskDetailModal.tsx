@@ -17,9 +17,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import type { Priority, Task } from "@/lib/types";
-import { priorityClass, statusLabel } from "@/lib/format";
+import { cn } from "@/lib/utils";
+import { priorityBadgeClass, statusBadgeClass, statusLabel } from "@/lib/format";
 
 interface TaskDetailModalProps {
   task: Task | null;
@@ -128,20 +130,24 @@ export function TaskDetailModal({ task, onOpenChange, onChanged }: TaskDetailMod
                 #{task.id} {task.title}
               </DialogTitle>
             </DialogHeader>
-            <div className="space-y-2 text-sm">
-              <p>
-                <span className="text-muted-foreground">Status: </span>
-                {statusLabel(task.status)}
-              </p>
-              <p>
-                <span className="text-muted-foreground">Priority: </span>
-                <span className={priorityClass(task.priority)}>{task.priority}</span>
-              </p>
+            <div className="space-y-3 text-sm">
+              <div className="flex items-center gap-2">
+                <Badge className={cn("border-transparent font-medium", statusBadgeClass(task.status))}>
+                  {statusLabel(task.status)}
+                </Badge>
+                {task.priority !== "none" && (
+                  <Badge className={cn("border-transparent capitalize", priorityBadgeClass(task.priority))}>
+                    {task.priority}
+                  </Badge>
+                )}
+              </div>
               <p>
                 <span className="text-muted-foreground">Due: </span>
-                {task.due_date ?? "-"}
+                {task.due_date ?? "–"}
               </p>
-              <p className="whitespace-pre-wrap pt-2">{task.description || "(no description)"}</p>
+              <p className="whitespace-pre-wrap border-t pt-3">
+                {task.description || "(no description)"}
+              </p>
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

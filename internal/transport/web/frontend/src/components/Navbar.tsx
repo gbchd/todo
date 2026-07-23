@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
-import { Plus } from "lucide-react";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { CheckCircle2, Plus } from "lucide-react";
 
 export type View = "list" | "board";
 
@@ -11,14 +12,18 @@ interface NavbarProps {
 
 export function Navbar({ view, onViewChange, onAddClick }: NavbarProps) {
   return (
-    <nav className="flex items-center gap-4 border-b px-5 py-3">
-      <span className="mr-auto text-lg font-semibold">todo</span>
+    <nav className="sticky top-0 z-10 flex items-center gap-4 border-b bg-background/80 px-5 py-3 backdrop-blur-sm">
+      <span className="mr-auto flex items-center gap-1.5 text-lg font-semibold">
+        <CheckCircle2 className="size-5 text-primary" />
+        todo
+      </span>
 
-      <div className="inline-flex rounded-md border" role="tablist">
+      <div className="inline-flex rounded-md border p-0.5" role="tablist">
         <Button
           type="button"
           variant={view === "list" ? "default" : "ghost"}
-          className="rounded-r-none"
+          size="sm"
+          className="rounded-sm"
           onClick={() => onViewChange("list")}
         >
           List
@@ -26,12 +31,15 @@ export function Navbar({ view, onViewChange, onAddClick }: NavbarProps) {
         <Button
           type="button"
           variant={view === "board" ? "default" : "ghost"}
-          className="rounded-l-none border-l"
+          size="sm"
+          className="rounded-sm"
           onClick={() => onViewChange("board")}
         >
           Board
         </Button>
       </div>
+
+      <ThemeToggle />
 
       <Button type="button" onClick={onAddClick}>
         <Plus /> Add task
