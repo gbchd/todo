@@ -1,0 +1,10 @@
+[?25l[?2004h todo — kanban [K
+[K
+ Open (1)                  In Progress (1)           Done (1)                 [K
+╭────────────────────────╮╭────────────────────────╮╭────────────────────────╮[K
+│ #1 Write report        ││ #2 Review PR           ││ #3 Ship release        │[K
+│ high  due 2026-08-01   ││ none  due -            ││ low  due -             │[K
+╰────────────────────────╯╰────────────────────────╯╰────────────────────────╯[K
+                                                                              [K
+[K
+←/→ column  ↑/↓ card  H/L move card  enter detail  a add  e edit  d delete  q qu[9A [K[J[2K[?2004l[?25h[?1002l[?1003l[?1006l
