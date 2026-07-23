@@ -65,12 +65,32 @@ func (s *Service) GetTask(ctx context.Context, id int64) (Task, error) {
 
 // ListTasks returns tasks matching filter, sorted per filter.SortBy.
 func (s *Service) ListTasks(ctx context.Context, filter TaskFilter) ([]Task, error) {
+	if filter.Status != nil && !validStatus(*filter.Status) {
+		return nil, &ValidationError{Field: "status", Message: "invalid status " + string(*filter.Status)}
+	}
+	if filter.Priority != nil {
+		if err := priorityError(*filter.Priority); err != nil {
+			return nil, err
+		}
+	}
+	if !validSortKey(filter.SortBy) {
+		return nil, &ValidationError{Field: "sort", Message: "invalid sort " + string(filter.SortBy)}
+	}
+
 	tasks, err := s.repo.List(ctx, filter)
 	if err != nil {
 		return nil, err
 	}
 	sortTasks(tasks, filter.SortBy)
 	return tasks, nil
+}
+
+func validSortKey(k SortKey) bool {
+	switch k {
+	case SortDefault, SortPriority, SortID, SortCreated:
+		return true
+	}
+	return false
 }
 
 // UpdateTask applies a partial patch; unset fields are left untouched.

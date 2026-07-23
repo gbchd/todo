@@ -186,6 +186,32 @@ func TestList_HidesDoneByDefault(t *testing.T) {
 	}
 }
 
+func TestList_InvalidSortRejected(t *testing.T) {
+	dbPath := newDB(t)
+	runCLI(t, dbPath, "add", "task")
+
+	_, stderr, code := runCLI(t, dbPath, "list", "--sort", "bogus")
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, "sort:") {
+		t.Errorf("stderr = %q", stderr)
+	}
+}
+
+func TestList_InvalidStatusRejected(t *testing.T) {
+	dbPath := newDB(t)
+	runCLI(t, dbPath, "add", "task")
+
+	_, stderr, code := runCLI(t, dbPath, "list", "--status", "bogus")
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, "status:") {
+		t.Errorf("stderr = %q", stderr)
+	}
+}
+
 func TestList_Golden(t *testing.T) {
 	dbPath := newDB(t)
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)

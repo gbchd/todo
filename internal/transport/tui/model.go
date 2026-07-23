@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/gbchd/todo/internal/service/todo"
+	"github.com/gbchd/todo/internal/transport/statusverb"
 )
 
 type layoutKind int
@@ -182,20 +183,6 @@ func (m *model) moveColumn(delta int) {
 	m.cursor = clamp(m.cursor, 0, n-1)
 }
 
-// setStatus maps a target lifecycle status onto the corresponding Service
-// verb, so kanban column moves and the list/split "advance status" key
-// never construct a status string directly.
-func setStatus(ctx context.Context, svc *todo.Service, id int64, target todo.Status) (todo.Task, error) {
-	switch target {
-	case todo.StatusOpen:
-		return svc.ReopenTask(ctx, id)
-	case todo.StatusInProgress:
-		return svc.StartTask(ctx, id)
-	default:
-		return svc.CompleteTask(ctx, id)
-	}
-}
-
 func nextStatus(s todo.Status) todo.Status {
 	switch s {
 	case todo.StatusOpen:
@@ -218,7 +205,7 @@ func columnIndex(s todo.Status) int {
 
 func (m *model) advanceStatus(t todo.Task) {
 	next := nextStatus(t.Status)
-	if _, err := setStatus(m.ctx, m.svc, t.ID, next); err != nil {
+	if _, err := statusverb.Apply(m.ctx, m.svc, t.ID, next); err != nil {
 		m.err = err
 		return
 	}
@@ -239,7 +226,7 @@ func (m *model) moveCardColumn(delta int) {
 	if target == m.column {
 		return
 	}
-	if _, err := setStatus(m.ctx, m.svc, t.ID, columnStatuses[target]); err != nil {
+	if _, err := statusverb.Apply(m.ctx, m.svc, t.ID, columnStatuses[target]); err != nil {
 		m.err = err
 		return
 	}

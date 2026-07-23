@@ -64,7 +64,7 @@ func formForEdit(t todo.Task) form {
 	f.description.SetValue(t.Description)
 	f.priority = t.Priority
 	if t.DueDate != nil {
-		f.dueDate.SetValue(t.DueDate.Format("2006-01-02"))
+		f.dueDate.SetValue(t.DueDate.Format(todo.DateLayout))
 	}
 	return f
 }
@@ -113,7 +113,7 @@ func (f form) parseDue() (*time.Time, error) {
 	if s == "" {
 		return nil, nil
 	}
-	d, err := time.Parse("2006-01-02", s)
+	d, err := time.Parse(todo.DateLayout, s)
 	if err != nil {
 		return nil, fmt.Errorf("invalid date %q (want YYYY-MM-DD)", s)
 	}

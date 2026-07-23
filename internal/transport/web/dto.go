@@ -22,7 +22,7 @@ type taskDTO struct {
 func toDTO(t todo.Task) taskDTO {
 	var due, completed *string
 	if t.DueDate != nil {
-		s := t.DueDate.Format("2006-01-02")
+		s := t.DueDate.Format(todo.DateLayout)
 		due = &s
 	}
 	if t.CompletedAt != nil {

@@ -12,13 +12,12 @@ import (
 
 const (
 	timestampLayout = time.RFC3339
-	dateLayout      = "2006-01-02"
 
 	taskColumns = "id, title, description, status, priority, due_date, created_at, updated_at, completed_at"
 )
 
 func formatTimestamp(t time.Time) string { return t.UTC().Format(timestampLayout) }
-func formatDate(t time.Time) string      { return t.UTC().Format(dateLayout) }
+func formatDate(t time.Time) string      { return t.UTC().Format(todo.DateLayout) }
 
 func nullString(s string) sql.NullString {
 	if s == "" {
@@ -62,7 +61,7 @@ func scanTask(row scanner) (todo.Task, error) {
 	t.Priority = todo.Priority(priority)
 
 	if dueDate.Valid {
-		d, err := time.Parse(dateLayout, dueDate.String)
+		d, err := time.Parse(todo.DateLayout, dueDate.String)
 		if err != nil {
 			return todo.Task{}, fmt.Errorf("parse due_date: %w", err)
 		}

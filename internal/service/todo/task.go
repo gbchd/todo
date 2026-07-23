@@ -4,6 +4,10 @@ package todo
 
 import "time"
 
+// DateLayout is the calendar-day format (no time component) used to parse
+// and render DueDate wherever it crosses an adapter or storage boundary.
+const DateLayout = "2006-01-02"
+
 // Status is a task's lifecycle state.
 type Status string
 

@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
-)
 
-const dateLayout = "2006-01-02"
+	"github.com/gbchd/todo/internal/service/todo"
+)
 
 // parseDate parses a literal YYYY-MM-DD date or a relative shorthand
 // (today, tomorrow, +Nd, +Nw), relative to now.
@@ -30,7 +30,7 @@ func parseDate(s string, now time.Time) (time.Time, error) {
 			}
 		}
 	}
-	t, err := time.Parse(dateLayout, s)
+	t, err := time.Parse(todo.DateLayout, s)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("invalid date %q (want YYYY-MM-DD, today, tomorrow, +Nd, +Nw)", s)
 	}
@@ -45,5 +45,5 @@ func formatDate(t *time.Time) string {
 	if t == nil {
 		return ""
 	}
-	return t.Format(dateLayout)
+	return t.Format(todo.DateLayout)
 }

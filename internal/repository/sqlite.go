@@ -31,7 +31,6 @@ func Open(ctx context.Context, path string) (*SQLiteRepository, error) {
 	for _, pragma := range []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA busy_timeout=5000",
-		"PRAGMA foreign_keys=ON",
 	} {
 		if _, err := db.ExecContext(ctx, pragma); err != nil {
 			db.Close()

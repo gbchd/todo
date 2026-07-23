@@ -278,3 +278,32 @@ func TestListTasks_FilterByStatus(t *testing.T) {
 		t.Errorf("got = %v, want only done task", got)
 	}
 }
+
+func TestListTasks_InvalidStatusFilter(t *testing.T) {
+	svc, _, _ := newTestService()
+	status := Status("bogus")
+	_, err := svc.ListTasks(context.Background(), TaskFilter{Status: &status})
+	var verr *ValidationError
+	if !errors.As(err, &verr) || verr.Field != "status" {
+		t.Fatalf("err = %v, want *ValidationError{Field: status}", err)
+	}
+}
+
+func TestListTasks_InvalidPriorityFilter(t *testing.T) {
+	svc, _, _ := newTestService()
+	priority := Priority("urgent")
+	_, err := svc.ListTasks(context.Background(), TaskFilter{Priority: &priority})
+	var verr *ValidationError
+	if !errors.As(err, &verr) || verr.Field != "priority" {
+		t.Fatalf("err = %v, want *ValidationError{Field: priority}", err)
+	}
+}
+
+func TestListTasks_InvalidSortKey(t *testing.T) {
+	svc, _, _ := newTestService()
+	_, err := svc.ListTasks(context.Background(), TaskFilter{SortBy: SortKey("bogus")})
+	var verr *ValidationError
+	if !errors.As(err, &verr) || verr.Field != "sort" {
+		t.Fatalf("err = %v, want *ValidationError{Field: sort}", err)
+	}
+}

@@ -3,7 +3,6 @@
 package web
 
 import (
-	"context"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gbchd/todo/internal/service/todo"
+	"github.com/gbchd/todo/internal/transport/statusverb"
 )
 
 //go:embed static
@@ -90,7 +90,7 @@ func createTask(svc *todo.Service) http.HandlerFunc {
 			Priority:    todo.Priority(req.Priority),
 		}
 		if req.DueDate != nil {
-			d, err := time.Parse("2006-01-02", *req.DueDate)
+			d, err := time.Parse(todo.DateLayout, *req.DueDate)
 			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid due_date"})
 				return
@@ -161,7 +161,7 @@ func patchTask(svc *todo.Service) http.HandlerFunc {
 			}
 		}
 		if statusChange != nil {
-			t, err = applyStatus(r.Context(), svc, id, *statusChange)
+			t, err = statusverb.Apply(r.Context(), svc, id, *statusChange)
 			if err != nil {
 				writeError(w, err)
 				return
@@ -208,7 +208,7 @@ func parsePatch(body map[string]json.RawMessage) (todo.TaskPatch, *todo.Status, 
 		if v == nil {
 			patch.DueDate = todo.Set[*time.Time](nil)
 		} else {
-			d, err := time.Parse("2006-01-02", *v)
+			d, err := time.Parse(todo.DateLayout, *v)
 			if err != nil {
 				return patch, nil, errors.New("invalid due_date")
 			}
@@ -241,21 +241,5 @@ func deleteTask(svc *todo.Service) http.HandlerFunc {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
-	}
-}
-
-// applyStatus maps a target lifecycle status onto the corresponding
-// Service verb (Start/Complete/Reopen), the same convention the TUI adapter
-// uses, so no invalid status string is ever constructed.
-func applyStatus(ctx context.Context, svc *todo.Service, id int64, target todo.Status) (todo.Task, error) {
-	switch target {
-	case todo.StatusOpen:
-		return svc.ReopenTask(ctx, id)
-	case todo.StatusInProgress:
-		return svc.StartTask(ctx, id)
-	case todo.StatusDone:
-		return svc.CompleteTask(ctx, id)
-	default:
-		return todo.Task{}, &todo.ValidationError{Field: "status", Message: "invalid status " + string(target)}
 	}
 }
