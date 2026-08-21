@@ -40,4 +40,5 @@ func TestLoadFrom_FillsMissingFieldsWithDefaults(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, DefaultTUILayout, cfg.TUILayout)
 	require.Equal(t, DefaultWebPort, cfg.WebPort)
+	require.Equal(t, filepath.Join(dir, dbName), cfg.DBPath)
 }

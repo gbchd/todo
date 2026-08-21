@@ -165,11 +165,7 @@ func getTask(ctx context.Context, q queryExecer, id int64) (todo.Task, error) {
 	return t, nil
 }
 
-// Update overwrites the row matching t.ID with t's fields.
-func (r *SQLiteRepository) Update(ctx context.Context, t todo.Task) (todo.Task, error) {
-	return updateTask(ctx, r.db, t)
-}
-
+// updateTask overwrites the row matching t.ID with t's fields.
 func updateTask(ctx context.Context, q queryExecer, t todo.Task) (todo.Task, error) {
 	res, err := q.ExecContext(ctx,
 		`UPDATE tasks SET title=?, description=?, status=?, priority=?, due_date=?, parent_id=?,
