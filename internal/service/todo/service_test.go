@@ -110,6 +110,70 @@ func TestUpdateTask_NotFound(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
+func TestUpdateTask_StatusTransition(t *testing.T) {
+	ctx := context.Background()
+	svc, clock := newTestService()
+	created, _ := svc.AddTask(ctx, NewTask{Title: "x"})
+
+	*clock = clock.Add(time.Hour)
+	got, err := svc.UpdateTask(ctx, created.ID, TaskPatch{Status: Set(StatusDone)})
+	require.NoError(t, err)
+	assert.Equal(t, StatusDone, got.Status)
+	require.NotNil(t, got.CompletedAt)
+	assert.True(t, got.CompletedAt.Equal(*clock), "CompletedAt = %v, want %v", got.CompletedAt, clock)
+
+	*clock = clock.Add(time.Hour)
+	got, err = svc.UpdateTask(ctx, created.ID, TaskPatch{Status: Set(StatusOpen)})
+	require.NoError(t, err)
+	assert.Equal(t, StatusOpen, got.Status)
+	assert.Nil(t, got.CompletedAt)
+}
+
+func TestUpdateTask_FieldAndStatusStampsUpdatedAtOnce(t *testing.T) {
+	ctx := context.Background()
+	svc, clock := newTestService()
+	created, _ := svc.AddTask(ctx, NewTask{Title: "orig"})
+
+	*clock = clock.Add(time.Hour)
+	got, err := svc.UpdateTask(ctx, created.ID, TaskPatch{Title: Set("renamed"), Status: Set(StatusDone)})
+	require.NoError(t, err)
+	assert.Equal(t, "renamed", got.Title)
+	assert.Equal(t, StatusDone, got.Status)
+	assert.True(t, got.UpdatedAt.Equal(*clock), "UpdatedAt should equal the single stamp taken for this patch")
+	require.NotNil(t, got.CompletedAt)
+	assert.True(t, got.CompletedAt.Equal(*clock), "CompletedAt should equal the same stamp as UpdatedAt")
+}
+
+// TestUpdateTask_InvalidStatusRejectedAtomically is the regression for
+// Finding 2: a rejected status must not leave an earlier field in the same
+// patch persisted.
+func TestUpdateTask_InvalidStatusRejectedAtomically(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestService()
+	created, _ := svc.AddTask(ctx, NewTask{Title: "orig"})
+
+	_, err := svc.UpdateTask(ctx, created.ID, TaskPatch{Title: Set("CHANGED"), Status: Set(Status("bogus"))})
+	var verr *ValidationError
+	require.ErrorAs(t, err, &verr)
+	assert.Equal(t, "status", verr.Field)
+	assert.Equal(t, "invalid status bogus", verr.Message)
+
+	got, err := svc.GetTask(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "orig", got.Title, "invalid status must leave prior fields in the same patch untouched")
+}
+
+func TestUpdateTask_EmptyPatchDoesNotBumpUpdatedAt(t *testing.T) {
+	ctx := context.Background()
+	svc, clock := newTestService()
+	created, _ := svc.AddTask(ctx, NewTask{Title: "x"})
+
+	*clock = clock.Add(time.Hour)
+	got, err := svc.UpdateTask(ctx, created.ID, TaskPatch{})
+	require.NoError(t, err)
+	assert.True(t, got.UpdatedAt.Equal(created.UpdatedAt), "UpdatedAt should not change on an empty patch")
+}
+
 func TestStatusLifecycle(t *testing.T) {
 	ctx := context.Background()
 	svc, clock := newTestService()

@@ -1,10 +1,11 @@
 package todo
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 )
@@ -184,25 +185,38 @@ func validSortKey(k SortKey) bool {
 	return false
 }
 
-// UpdateTask applies a partial patch; unset fields are left untouched.
-// Setting ParentID demotes the task to a Subtask; setting it to nil promotes
-// it back to top level.
+// UpdateTask applies a partial patch; unset fields are left untouched. The
+// whole patch — including a Status transition — is applied inside a single
+// UpdateWith transaction, so a rejected field leaves the task untouched
+// rather than partially written. Setting ParentID demotes the task to a
+// Subtask; setting it to nil promotes it back to top level. Setting Status
+// applies the same lifecycle rules as the explicit Start/Complete/Reopen
+// verbs (see applyStatus).
 func (s *Service) UpdateTask(ctx context.Context, id int64, patch TaskPatch) (Task, error) {
 	if patch.ParentID.IsSet() {
 		if err := s.validateParent(ctx, id, patch.ParentID.Value()); err != nil {
 			return Task{}, err
 		}
 	}
+	if patch.Status.IsSet() {
+		if !validStatus(patch.Status.Value()) {
+			return Task{}, &ValidationError{Field: "status", Message: "invalid status " + string(patch.Status.Value())}
+		}
+	}
 	return s.repo.UpdateWith(ctx, id, func(existing Task) (Task, error) {
+		now := s.now()
+		changed := false
 		if patch.Title.IsSet() {
 			title := patch.Title.Value()
 			if err := titleError(title); err != nil {
 				return Task{}, err
 			}
 			existing.Title = strings.TrimSpace(title)
+			changed = true
 		}
 		if patch.Description.IsSet() {
 			existing.Description = patch.Description.Value()
+			changed = true
 		}
 		if patch.Priority.IsSet() {
 			p := patch.Priority.Value()
@@ -210,14 +224,23 @@ func (s *Service) UpdateTask(ctx context.Context, id int64, patch TaskPatch) (Ta
 				return Task{}, err
 			}
 			existing.Priority = p
+			changed = true
 		}
 		if patch.DueDate.IsSet() {
 			existing.DueDate = normalizeDate(patch.DueDate.Value())
+			changed = true
 		}
 		if patch.ParentID.IsSet() {
 			existing.ParentID = patch.ParentID.Value()
+			changed = true
 		}
-		existing.UpdatedAt = s.now()
+		if patch.Status.IsSet() {
+			existing = applyStatus(existing, patch.Status.Value(), now)
+			changed = true
+		}
+		if changed {
+			existing.UpdatedAt = now
+		}
 		return existing, nil
 	})
 }
@@ -225,9 +248,9 @@ func (s *Service) UpdateTask(ctx context.Context, id int64, patch TaskPatch) (Ta
 // StartTask transitions a task to StatusInProgress.
 func (s *Service) StartTask(ctx context.Context, id int64) (Task, error) {
 	return s.repo.UpdateWith(ctx, id, func(existing Task) (Task, error) {
-		existing.Status = StatusInProgress
-		existing.CompletedAt = nil
-		existing.UpdatedAt = s.now()
+		now := s.now()
+		existing = applyStatus(existing, StatusInProgress, now)
+		existing.UpdatedAt = now
 		return existing, nil
 	})
 }
@@ -236,8 +259,7 @@ func (s *Service) StartTask(ctx context.Context, id int64) (Task, error) {
 func (s *Service) CompleteTask(ctx context.Context, id int64) (Task, error) {
 	return s.repo.UpdateWith(ctx, id, func(existing Task) (Task, error) {
 		now := s.now()
-		existing.Status = StatusDone
-		existing.CompletedAt = &now
+		existing = applyStatus(existing, StatusDone, now)
 		existing.UpdatedAt = now
 		return existing, nil
 	})
@@ -246,11 +268,25 @@ func (s *Service) CompleteTask(ctx context.Context, id int64) (Task, error) {
 // ReopenTask transitions a task back to StatusOpen, clearing CompletedAt.
 func (s *Service) ReopenTask(ctx context.Context, id int64) (Task, error) {
 	return s.repo.UpdateWith(ctx, id, func(existing Task) (Task, error) {
-		existing.Status = StatusOpen
-		existing.CompletedAt = nil
-		existing.UpdatedAt = s.now()
+		now := s.now()
+		existing = applyStatus(existing, StatusOpen, now)
+		existing.UpdatedAt = now
 		return existing, nil
 	})
+}
+
+// applyStatus transitions t to target, applying the lifecycle's CompletedAt
+// rule exactly once: done stamps CompletedAt to now, open and in-progress
+// clear it. Shared by UpdateTask and the Start/Complete/Reopen verbs so the
+// rule lives in one place.
+func applyStatus(t Task, target Status, now time.Time) Task {
+	t.Status = target
+	if target == StatusDone {
+		t.CompletedAt = &now
+	} else {
+		t.CompletedAt = nil
+	}
+	return t
 }
 
 // DeleteTask permanently removes a task, and with it any Subtasks it has
@@ -287,16 +323,23 @@ func defaultLess(a, b Task) bool {
 }
 
 func sortTasks(tasks []Task, sortBy SortKey) {
-	sort.SliceStable(tasks, func(i, j int) bool {
+	slices.SortStableFunc(tasks, func(a, b Task) int {
 		switch sortBy {
 		case SortPriority:
-			return priorityRank[tasks[i].Priority] > priorityRank[tasks[j].Priority]
+			return cmp.Compare(priorityRank[b.Priority], priorityRank[a.Priority])
 		case SortID:
-			return tasks[i].ID < tasks[j].ID
+			return cmp.Compare(a.ID, b.ID)
 		case SortCreated:
-			return tasks[i].CreatedAt.Before(tasks[j].CreatedAt)
+			return a.CreatedAt.Compare(b.CreatedAt)
 		default:
-			return defaultLess(tasks[i], tasks[j])
+			switch {
+			case defaultLess(a, b):
+				return -1
+			case defaultLess(b, a):
+				return 1
+			default:
+				return 0
+			}
 		}
 	})
 }

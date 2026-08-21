@@ -105,13 +105,16 @@ func (o Optional[T]) Value() T { return o.value }
 
 // TaskPatch is a partial update: an unset field is left untouched.
 // A DueDate set to a nil *time.Time clears the due date; a ParentID set to a
-// nil *int64 promotes a Subtask back to top level.
+// nil *int64 promotes a Subtask back to top level. Setting Status applies the
+// same lifecycle transition as the explicit Start/Complete/Reopen verbs,
+// atomically with the rest of the patch.
 type TaskPatch struct {
 	Title       Optional[string]
 	Description Optional[string]
 	Priority    Optional[Priority]
 	DueDate     Optional[*time.Time]
 	ParentID    Optional[*int64]
+	Status      Optional[Status]
 }
 
 // SortKey selects the ordering ListTasks applies.

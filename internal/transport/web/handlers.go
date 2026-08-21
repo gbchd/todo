@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/gbchd/todo/internal/service/todo"
-	"github.com/gbchd/todo/internal/transport/statusverb"
 )
 
 //go:embed static
@@ -146,7 +145,10 @@ func getTask(svc *todo.Service) http.HandlerFunc {
 // title/description/priority/due_date/parent_id/status may be present; absent
 // keys are left untouched. A JSON null clears due_date, and promotes a Subtask
 // back to top level for parent_id — the key-presence check is exactly the
-// tri-state todo.Optional expects, so no extra machinery is needed.
+// tri-state todo.Optional expects, so no extra machinery is needed. The whole
+// patch, status included, is applied by one Service.UpdateTask call so a
+// rejected field (e.g. an invalid status) can never leave a prior field
+// half-applied.
 func patchTask(svc *todo.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := pathID(r)
@@ -161,101 +163,81 @@ func patchTask(svc *todo.Service) http.HandlerFunc {
 			return
 		}
 
-		patch, statusChange, err := parsePatch(body)
+		patch, err := parsePatch(body)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
 
-		t, err := svc.GetTask(r.Context(), id)
+		t, err := svc.UpdateTask(r.Context(), id, patch)
 		if err != nil {
 			writeError(w, err)
 			return
-		}
-
-		if hasPatch(patch) {
-			t, err = svc.UpdateTask(r.Context(), id, patch)
-			if err != nil {
-				writeError(w, err)
-				return
-			}
-		}
-		if statusChange != nil {
-			t, err = statusverb.Apply(r.Context(), svc, id, *statusChange)
-			if err != nil {
-				writeError(w, err)
-				return
-			}
 		}
 
 		writeJSON(w, http.StatusOK, toDTO(t))
 	}
 }
 
-func hasPatch(p todo.TaskPatch) bool {
-	return p.Title.IsSet() || p.Description.IsSet() || p.Priority.IsSet() ||
-		p.DueDate.IsSet() || p.ParentID.IsSet()
+// setPatchField unmarshals body[key] into an Optional[T] field when key is
+// present, leaving dst untouched otherwise. Covers the mechanical patch
+// fields whose wire and domain shapes match one-for-one; due_date (needs a
+// date parse) and status (validated inside the domain, not here) stay
+// bespoke in parsePatch.
+func setPatchField[T any](body map[string]json.RawMessage, key string, dst *todo.Optional[T]) error {
+	raw, ok := body[key]
+	if !ok {
+		return nil
+	}
+	var v T
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return errors.New("invalid " + key)
+	}
+	*dst = todo.Set(v)
+	return nil
 }
 
-func parsePatch(body map[string]json.RawMessage) (todo.TaskPatch, *todo.Status, error) {
+func parsePatch(body map[string]json.RawMessage) (todo.TaskPatch, error) {
 	patch := todo.TaskPatch{}
 
-	if raw, ok := body["title"]; ok {
-		var v string
-		if err := json.Unmarshal(raw, &v); err != nil {
-			return patch, nil, errors.New("invalid title")
-		}
-		patch.Title = todo.Set(v)
+	if err := setPatchField(body, "title", &patch.Title); err != nil {
+		return patch, err
 	}
-	if raw, ok := body["description"]; ok {
-		var v string
-		if err := json.Unmarshal(raw, &v); err != nil {
-			return patch, nil, errors.New("invalid description")
-		}
-		patch.Description = todo.Set(v)
+	if err := setPatchField(body, "description", &patch.Description); err != nil {
+		return patch, err
 	}
-	if raw, ok := body["priority"]; ok {
-		var v string
-		if err := json.Unmarshal(raw, &v); err != nil {
-			return patch, nil, errors.New("invalid priority")
-		}
-		patch.Priority = todo.Set(todo.Priority(v))
+	if err := setPatchField(body, "priority", &patch.Priority); err != nil {
+		return patch, err
 	}
+	if err := setPatchField(body, "parent_id", &patch.ParentID); err != nil {
+		return patch, err
+	}
+
 	if raw, ok := body["due_date"]; ok {
 		var v *string
 		if err := json.Unmarshal(raw, &v); err != nil {
-			return patch, nil, errors.New("invalid due_date")
+			return patch, errors.New("invalid due_date")
 		}
 		if v == nil {
 			patch.DueDate = todo.Set[*time.Time](nil)
 		} else {
 			d, err := time.Parse(todo.DateLayout, *v)
 			if err != nil {
-				return patch, nil, errors.New("invalid due_date")
+				return patch, errors.New("invalid due_date")
 			}
 			patch.DueDate = todo.Set(&d)
 		}
 	}
 
-	if raw, ok := body["parent_id"]; ok {
-		var v *int64
-		if err := json.Unmarshal(raw, &v); err != nil {
-			return patch, nil, errors.New("invalid parent_id")
-		}
-		patch.ParentID = todo.Set(v)
-	}
-
-	var statusChange *todo.Status
 	if raw, ok := body["status"]; ok {
 		var v string
 		if err := json.Unmarshal(raw, &v); err != nil {
-			return patch, nil, errors.New("invalid status")
+			return patch, errors.New("invalid status")
 		}
-		s := todo.Status(v)
-		statusChange = &s
+		patch.Status = todo.Set(todo.Status(v))
 	}
 
-	return patch, statusChange, nil
+	return patch, nil
 }
 
 func deleteTask(svc *todo.Service) http.HandlerFunc {
