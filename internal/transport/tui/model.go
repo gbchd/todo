@@ -12,7 +12,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/gbchd/todo/internal/service/todo"
-	"github.com/gbchd/todo/internal/transport/statusverb"
 )
 
 type layoutKind int
@@ -273,7 +272,7 @@ func columnIndex(s todo.Status) int {
 // present (just regrouped into its new column), selectedTask finds it again.
 func (m *model) advanceStatus(t todo.Task) {
 	next := nextStatus(t.Status)
-	if _, err := statusverb.Apply(m.ctx, m.svc, t.ID, next); err != nil {
+	if _, err := m.svc.UpdateTask(m.ctx, t.ID, todo.TaskPatch{Status: todo.Set(next)}); err != nil {
 		m.err = err
 		return
 	}
@@ -293,7 +292,7 @@ func (m *model) moveCardColumn(delta int) {
 	if target == col {
 		return
 	}
-	if _, err := statusverb.Apply(m.ctx, m.svc, t.ID, columnStatuses[target]); err != nil {
+	if _, err := m.svc.UpdateTask(m.ctx, t.ID, todo.TaskPatch{Status: todo.Set(columnStatuses[target])}); err != nil {
 		m.err = err
 		return
 	}
