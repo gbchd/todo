@@ -138,6 +138,45 @@ func TestPatchTask_InvalidPriority(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// TestPatchTask_InvalidStatusLeavesFieldUnchanged is the regression for
+// Finding 2: PATCH {"title":"CHANGED","status":"bogus"} used to return 400
+// but still persist the title change. The whole patch must now be rejected
+// atomically.
+func TestPatchTask_InvalidStatusLeavesFieldUnchanged(t *testing.T) {
+	mux := newTestMux(t)
+	created := decodeTask(t, doJSON(t, mux, "POST", "/api/tasks", createRequest{Title: "orig"}))
+
+	rec := doJSON(t, mux, "PATCH", "/api/tasks/"+itoa(created.ID), map[string]any{"title": "CHANGED", "status": "bogus"})
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body=%s", rec.Body.String())
+	assert.JSONEq(t, `{"error":"status: invalid status bogus"}`, rec.Body.String())
+
+	rec = doJSON(t, mux, "GET", "/api/tasks/"+itoa(created.ID), nil)
+	got := decodeTask(t, rec)
+	assert.Equal(t, "orig", got.Title, "rejected patch must not persist the title change")
+}
+
+func TestPatchTask_ValidFieldAndValidStatusAppliesBoth(t *testing.T) {
+	mux := newTestMux(t)
+	created := decodeTask(t, doJSON(t, mux, "POST", "/api/tasks", createRequest{Title: "orig"}))
+
+	rec := doJSON(t, mux, "PATCH", "/api/tasks/"+itoa(created.ID), map[string]any{"title": "renamed", "status": "done"})
+	require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+	updated := decodeTask(t, rec)
+	assert.Equal(t, "renamed", updated.Title)
+	assert.Equal(t, "done", updated.Status)
+	assert.NotNil(t, updated.CompletedAt)
+}
+
+func TestPatchTask_EmptyBodyDoesNotBumpUpdatedAt(t *testing.T) {
+	mux := newTestMux(t)
+	created := decodeTask(t, doJSON(t, mux, "POST", "/api/tasks", createRequest{Title: "x"}))
+
+	rec := doJSON(t, mux, "PATCH", "/api/tasks/"+itoa(created.ID), map[string]any{})
+	require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+	updated := decodeTask(t, rec)
+	assert.Equal(t, created.UpdatedAt, updated.UpdatedAt, "empty patch should not bump UpdatedAt")
+}
+
 func TestDeleteTask(t *testing.T) {
 	mux := newTestMux(t)
 	created := decodeTask(t, doJSON(t, mux, "POST", "/api/tasks", createRequest{Title: "x"}))
