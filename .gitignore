@@ -33,8 +33,7 @@ go.work.sum
 
 # AI workflow (Claude Code)
 .claude/
-.claude/settings.local.json
 .codegraph/
 .scratch/
 .playwright/
-docs/agents/
+docs/

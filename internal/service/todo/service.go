@@ -95,71 +95,61 @@ func validSortKey(k SortKey) bool {
 
 // UpdateTask applies a partial patch; unset fields are left untouched.
 func (s *Service) UpdateTask(ctx context.Context, id int64, patch TaskPatch) (Task, error) {
-	existing, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return Task{}, err
-	}
-
-	if patch.Title.IsSet() {
-		title := patch.Title.Value()
-		if err := titleError(title); err != nil {
-			return Task{}, err
+	return s.repo.UpdateWith(ctx, id, func(existing Task) (Task, error) {
+		if patch.Title.IsSet() {
+			title := patch.Title.Value()
+			if err := titleError(title); err != nil {
+				return Task{}, err
+			}
+			existing.Title = strings.TrimSpace(title)
 		}
-		existing.Title = strings.TrimSpace(title)
-	}
-	if patch.Description.IsSet() {
-		existing.Description = patch.Description.Value()
-	}
-	if patch.Priority.IsSet() {
-		p := patch.Priority.Value()
-		if err := priorityError(p); err != nil {
-			return Task{}, err
+		if patch.Description.IsSet() {
+			existing.Description = patch.Description.Value()
 		}
-		existing.Priority = p
-	}
-	if patch.DueDate.IsSet() {
-		existing.DueDate = normalizeDate(patch.DueDate.Value())
-	}
-	existing.UpdatedAt = s.now()
-
-	return s.repo.Update(ctx, existing)
+		if patch.Priority.IsSet() {
+			p := patch.Priority.Value()
+			if err := priorityError(p); err != nil {
+				return Task{}, err
+			}
+			existing.Priority = p
+		}
+		if patch.DueDate.IsSet() {
+			existing.DueDate = normalizeDate(patch.DueDate.Value())
+		}
+		existing.UpdatedAt = s.now()
+		return existing, nil
+	})
 }
 
 // StartTask transitions a task to StatusInProgress.
 func (s *Service) StartTask(ctx context.Context, id int64) (Task, error) {
-	existing, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return Task{}, err
-	}
-	existing.Status = StatusInProgress
-	existing.CompletedAt = nil
-	existing.UpdatedAt = s.now()
-	return s.repo.Update(ctx, existing)
+	return s.repo.UpdateWith(ctx, id, func(existing Task) (Task, error) {
+		existing.Status = StatusInProgress
+		existing.CompletedAt = nil
+		existing.UpdatedAt = s.now()
+		return existing, nil
+	})
 }
 
 // CompleteTask transitions a task to StatusDone and stamps CompletedAt.
 func (s *Service) CompleteTask(ctx context.Context, id int64) (Task, error) {
-	existing, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return Task{}, err
-	}
-	now := s.now()
-	existing.Status = StatusDone
-	existing.CompletedAt = &now
-	existing.UpdatedAt = now
-	return s.repo.Update(ctx, existing)
+	return s.repo.UpdateWith(ctx, id, func(existing Task) (Task, error) {
+		now := s.now()
+		existing.Status = StatusDone
+		existing.CompletedAt = &now
+		existing.UpdatedAt = now
+		return existing, nil
+	})
 }
 
 // ReopenTask transitions a task back to StatusOpen, clearing CompletedAt.
 func (s *Service) ReopenTask(ctx context.Context, id int64) (Task, error) {
-	existing, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return Task{}, err
-	}
-	existing.Status = StatusOpen
-	existing.CompletedAt = nil
-	existing.UpdatedAt = s.now()
-	return s.repo.Update(ctx, existing)
+	return s.repo.UpdateWith(ctx, id, func(existing Task) (Task, error) {
+		existing.Status = StatusOpen
+		existing.CompletedAt = nil
+		existing.UpdatedAt = s.now()
+		return existing, nil
+	})
 }
 
 // DeleteTask permanently removes a task.

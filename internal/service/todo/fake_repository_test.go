@@ -39,6 +39,18 @@ func (r *fakeRepository) Update(_ context.Context, t Task) (Task, error) {
 	return t, nil
 }
 
+func (r *fakeRepository) UpdateWith(ctx context.Context, id int64, mutate func(Task) (Task, error)) (Task, error) {
+	existing, err := r.Get(ctx, id)
+	if err != nil {
+		return Task{}, err
+	}
+	updated, err := mutate(existing)
+	if err != nil {
+		return Task{}, err
+	}
+	return r.Update(ctx, updated)
+}
+
 func (r *fakeRepository) Delete(_ context.Context, id int64) error {
 	if _, ok := r.tasks[id]; !ok {
 		return ErrNotFound

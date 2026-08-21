@@ -45,6 +45,13 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
+// queryExecer is satisfied by both *sql.DB and *sql.Tx, letting getTask and
+// updateTask run either directly against the pool or inside a transaction.
+type queryExecer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 func scanTask(row scanner) (todo.Task, error) {
 	var (
 		t                                 todo.Task
@@ -111,7 +118,11 @@ func (r *SQLiteRepository) Create(ctx context.Context, t todo.Task) (todo.Task, 
 
 // Get returns the task with the given id, or todo.ErrNotFound.
 func (r *SQLiteRepository) Get(ctx context.Context, id int64) (todo.Task, error) {
-	row := r.db.QueryRowContext(ctx, "SELECT "+taskColumns+" FROM tasks WHERE id = ?", id)
+	return getTask(ctx, r.db, id)
+}
+
+func getTask(ctx context.Context, q queryExecer, id int64) (todo.Task, error) {
+	row := q.QueryRowContext(ctx, "SELECT "+taskColumns+" FROM tasks WHERE id = ?", id)
 	t, err := scanTask(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return todo.Task{}, todo.ErrNotFound
@@ -124,7 +135,11 @@ func (r *SQLiteRepository) Get(ctx context.Context, id int64) (todo.Task, error)
 
 // Update overwrites the row matching t.ID with t's fields.
 func (r *SQLiteRepository) Update(ctx context.Context, t todo.Task) (todo.Task, error) {
-	res, err := r.db.ExecContext(ctx,
+	return updateTask(ctx, r.db, t)
+}
+
+func updateTask(ctx context.Context, q queryExecer, t todo.Task) (todo.Task, error) {
+	res, err := q.ExecContext(ctx,
 		`UPDATE tasks SET title=?, description=?, status=?, priority=?, due_date=?, created_at=?, updated_at=?, completed_at=?
 		 WHERE id=?`,
 		t.Title, nullString(t.Description), string(t.Status), string(t.Priority),
@@ -141,7 +156,41 @@ func (r *SQLiteRepository) Update(ctx context.Context, t todo.Task) (todo.Task, 
 	if n == 0 {
 		return todo.Task{}, todo.ErrNotFound
 	}
-	return r.Get(ctx, t.ID)
+	return getTask(ctx, q, t.ID)
+}
+
+// UpdateWith fetches the task with id, applies mutate, and writes the result
+// back inside a single transaction. Service methods use this (rather than a
+// separate Get + Update) so a concurrent PATCH/status-verb call on the same
+// task can't read the same "existing" row and then overwrite this call's
+// write with its own — the transaction serializes the two read-modify-write
+// cycles instead of letting them interleave.
+func (r *SQLiteRepository) UpdateWith(ctx context.Context, id int64, mutate func(todo.Task) (todo.Task, error)) (todo.Task, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return todo.Task{}, fmt.Errorf("begin update tx for task %d: %w", id, err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once Commit succeeds
+
+	existing, err := getTask(ctx, tx, id)
+	if err != nil {
+		return todo.Task{}, err
+	}
+
+	updated, err := mutate(existing)
+	if err != nil {
+		return todo.Task{}, err
+	}
+
+	t, err := updateTask(ctx, tx, updated)
+	if err != nil {
+		return todo.Task{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return todo.Task{}, fmt.Errorf("commit update tx for task %d: %w", id, err)
+	}
+	return t, nil
 }
 
 // Delete removes the task with the given id, or returns todo.ErrNotFound.
