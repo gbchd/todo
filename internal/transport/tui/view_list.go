@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
-
 	"github.com/gbchd/todo/internal/service/todo"
 )
 
@@ -37,19 +35,6 @@ func viewTaskList(tasks []todo.Task, cursor int) string {
 }
 
 func (m model) viewList() string {
-	background := viewTaskList(m.tasks, m.cursor)
-	w, h := m.size()
-
-	switch m.mode {
-	case modeForm:
-		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, m.form.view(min(w-4, 60)))
-	case modeDetail:
-		if t, ok := m.selectedTask(); ok {
-			return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, viewDetail(t, m.detailChildren, min(w-4, 60)))
-		}
-	case modeConfirmDelete:
-		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, viewConfirm(m.pendingDeleteID))
-	case modeBrowse:
-	}
-	return background
+	background := viewTaskList(m.tasks, indexOfID(m.tasks, m.selectedID))
+	return m.overlay(background)
 }

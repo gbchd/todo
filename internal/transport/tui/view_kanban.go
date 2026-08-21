@@ -25,13 +25,18 @@ func (m model) viewKanbanBoard() string {
 	w, _ := m.size()
 	colWidth := w/3 - 2
 
+	selectedCol := m.kanbanColumn()
 	var rendered [3]string
 	for i, tasks := range cols {
 		var b strings.Builder
 		b.WriteString(columnHeaderStyle.Render(fmt.Sprintf("%s (%d)", columnTitles[i], len(tasks))) + "\n")
+		selectedRow := -1
+		if i == selectedCol {
+			selectedRow = indexOfID(tasks, m.selectedID)
+		}
 		for j, t := range tasks {
 			style := cardStyle
-			if i == m.column && j == m.cursor {
+			if j == selectedRow {
 				style = cardSelectedStyle
 			}
 			b.WriteString(style.Width(colWidth).Render(cardText(t)) + "\n")
@@ -44,19 +49,5 @@ func (m model) viewKanbanBoard() string {
 }
 
 func (m model) viewKanban() string {
-	background := m.viewKanbanBoard()
-	w, h := m.size()
-
-	switch m.mode {
-	case modeForm:
-		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, m.form.view(min(w-4, 60)))
-	case modeDetail:
-		if t, ok := m.selectedTask(); ok {
-			return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, viewDetail(t, m.detailChildren, min(w-4, 60)))
-		}
-	case modeConfirmDelete:
-		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, viewConfirm(m.pendingDeleteID))
-	case modeBrowse:
-	}
-	return background
+	return m.overlay(m.viewKanbanBoard())
 }
