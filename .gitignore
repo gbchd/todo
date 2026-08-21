@@ -36,4 +36,8 @@ go.work.sum
 .codegraph/
 .scratch/
 .playwright/
+.sandcastle/
 docs/
+node_modules/
+package.json
+package-lock.json
