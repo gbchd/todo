@@ -25,9 +25,12 @@ const (
 
 var priorityCycle = []todo.Priority{todo.PriorityNone, todo.PriorityLow, todo.PriorityMedium, todo.PriorityHigh}
 
-// form holds add/edit form state. editingID is 0 for "add".
+// form holds add/edit form state. editingID is 0 for "add"; parentID is
+// non-nil only when adding a Subtask, which is always done from a Parent
+// Task's detail view, so the parent is never ambiguous.
 type form struct {
 	editingID   int64
+	parentID    *int64
 	title       textinput.Model
 	description textinput.Model
 	dueDate     textinput.Model
@@ -55,6 +58,12 @@ func newForm() form {
 
 func formForAdd() form {
 	return newForm()
+}
+
+func formForAddSubtask(parentID int64) form {
+	f := newForm()
+	f.parentID = &parentID
+	return f
 }
 
 func formForEdit(t todo.Task) form {
@@ -150,6 +159,9 @@ func (f form) view(width int) string {
 		return text
 	}
 
+	if f.parentID != nil {
+		fmt.Fprintf(&b, "%s\n\n", helpStyle.Render(fmt.Sprintf("Subtask of #%d", *f.parentID)))
+	}
 	fmt.Fprintf(&b, "%s\n%s\n\n", label(fieldTitle, "Title"), f.title.View())
 	fmt.Fprintf(&b, "%s\n%s\n\n", label(fieldDescription, "Description"), f.description.View())
 	fmt.Fprintf(&b, "%s\n%s (←/→ to change)\n\n", label(fieldPriority, "Priority"), priorityStyle(string(f.priority)).Render(string(f.priority)))

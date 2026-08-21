@@ -19,7 +19,7 @@ func (m model) viewSplit() string {
 		right = viewConfirm(m.pendingDeleteID)
 	default:
 		if t, ok := m.selectedTask(); ok {
-			right = viewDetailPane(t)
+			right = viewDetailPane(t, m.detailChildren)
 		} else {
 			right = helpStyle.Render("No tasks")
 		}

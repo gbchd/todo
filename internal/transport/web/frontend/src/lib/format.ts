@@ -1,4 +1,9 @@
-import type { Priority, Status } from "./types";
+import type { Priority, Status, Task } from "./types";
+
+// subtaskProgress is a parent's "2/5", or null when it has no subtasks.
+export function subtaskProgress(t: Task): string | null {
+  return t.child_count === 0 ? null : `${t.done_child_count}/${t.child_count}`;
+}
 
 export function statusLabel(s: Status): string {
   return { open: "Open", "in-progress": "In Progress", done: "Done" }[s];

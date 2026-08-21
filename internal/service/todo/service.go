@@ -2,6 +2,8 @@ package todo
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -32,7 +34,8 @@ func priorityError(p Priority) error {
 	return nil
 }
 
-// AddTask creates a new task in StatusOpen.
+// AddTask creates a new task in StatusOpen. A non-nil input.ParentID makes it
+// a Subtask of that task.
 func (s *Service) AddTask(ctx context.Context, input NewTask) (Task, error) {
 	if err := titleError(input.Title); err != nil {
 		return Task{}, err
@@ -44,6 +47,9 @@ func (s *Service) AddTask(ctx context.Context, input NewTask) (Task, error) {
 	if err := priorityError(priority); err != nil {
 		return Task{}, err
 	}
+	if err := s.validateParent(ctx, 0, input.ParentID); err != nil {
+		return Task{}, err
+	}
 
 	now := s.now()
 	t := Task{
@@ -52,10 +58,62 @@ func (s *Service) AddTask(ctx context.Context, input NewTask) (Task, error) {
 		Status:      StatusOpen,
 		Priority:    priority,
 		DueDate:     normalizeDate(input.DueDate),
+		ParentID:    input.ParentID,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
 	return s.repo.Create(ctx, t)
+}
+
+// validateParent enforces the one-level nesting rule for making taskID a
+// Subtask of parentID. SQLite cannot express "the row my foreign key points at
+// must itself have a NULL foreign key" without a trigger, so the rule lives
+// here — and it is also what makes a cycle check unnecessary. Pass taskID 0
+// for a task that does not exist yet and so cannot have children.
+//
+// This runs before the write rather than inside it: UpdateWith holds the
+// repository's single connection for the length of its transaction, so a
+// repository read from inside the mutate callback would deadlock. A parent
+// deleted in the window between the two is caught by the foreign key.
+func (s *Service) validateParent(ctx context.Context, taskID int64, parentID *int64) error {
+	if parentID == nil {
+		return nil
+	}
+	if *parentID == taskID {
+		return &ValidationError{Field: "parent", Message: "a task cannot be its own parent"}
+	}
+
+	parent, err := s.repo.Get(ctx, *parentID)
+	if errors.Is(err, ErrNotFound) {
+		// Not ErrNotFound: the task being written is not the thing that is
+		// missing, and letting it through would answer a bad parent_id with a
+		// 404 that reads as "no such task".
+		return &ValidationError{Field: "parent", Message: fmt.Sprintf("no task %d to be a subtask of", *parentID)}
+	}
+	if err != nil {
+		return err
+	}
+	if parent.IsSubtask() {
+		return &ValidationError{
+			Field:   "parent",
+			Message: fmt.Sprintf("task %d is itself a subtask; subtasks are only one level deep", parent.ID),
+		}
+	}
+
+	if taskID == 0 {
+		return nil
+	}
+	children, err := s.repo.List(ctx, TaskFilter{ParentID: Set(&taskID)})
+	if err != nil {
+		return err
+	}
+	if len(children) > 0 {
+		return &ValidationError{
+			Field:   "parent",
+			Message: fmt.Sprintf("task %d has subtasks of its own; subtasks are only one level deep", taskID),
+		}
+	}
+	return nil
 }
 
 // GetTask returns a single task by id, or ErrNotFound.
@@ -82,7 +140,40 @@ func (s *Service) ListTasks(ctx context.Context, filter TaskFilter) ([]Task, err
 		return nil, err
 	}
 	sortTasks(tasks, filter.SortBy)
-	return tasks, nil
+	return groupUnderParents(tasks), nil
+}
+
+// groupUnderParents pulls each Subtask out of the globally sorted order and
+// re-emits it directly beneath its Parent Task, preserving the sorted order
+// within each group. This is why `--sort priority` with subtasks revealed is
+// not a globally descending priority column. A Subtask whose parent is not in
+// the result (filtered out by status, say) has nothing to group under and
+// keeps its own position.
+func groupUnderParents(tasks []Task) []Task {
+	present := make(map[int64]bool, len(tasks))
+	for _, t := range tasks {
+		present[t.ID] = true
+	}
+
+	children := make(map[int64][]Task)
+	for _, t := range tasks {
+		if t.IsSubtask() && present[*t.ParentID] {
+			children[*t.ParentID] = append(children[*t.ParentID], t)
+		}
+	}
+	if len(children) == 0 {
+		return tasks
+	}
+
+	out := make([]Task, 0, len(tasks))
+	for _, t := range tasks {
+		if t.IsSubtask() && present[*t.ParentID] {
+			continue // emitted beneath its parent instead
+		}
+		out = append(out, t)
+		out = append(out, children[t.ID]...)
+	}
+	return out
 }
 
 func validSortKey(k SortKey) bool {
@@ -94,7 +185,14 @@ func validSortKey(k SortKey) bool {
 }
 
 // UpdateTask applies a partial patch; unset fields are left untouched.
+// Setting ParentID demotes the task to a Subtask; setting it to nil promotes
+// it back to top level.
 func (s *Service) UpdateTask(ctx context.Context, id int64, patch TaskPatch) (Task, error) {
+	if patch.ParentID.IsSet() {
+		if err := s.validateParent(ctx, id, patch.ParentID.Value()); err != nil {
+			return Task{}, err
+		}
+	}
 	return s.repo.UpdateWith(ctx, id, func(existing Task) (Task, error) {
 		if patch.Title.IsSet() {
 			title := patch.Title.Value()
@@ -115,6 +213,9 @@ func (s *Service) UpdateTask(ctx context.Context, id int64, patch TaskPatch) (Ta
 		}
 		if patch.DueDate.IsSet() {
 			existing.DueDate = normalizeDate(patch.DueDate.Value())
+		}
+		if patch.ParentID.IsSet() {
+			existing.ParentID = patch.ParentID.Value()
 		}
 		existing.UpdatedAt = s.now()
 		return existing, nil
@@ -152,7 +253,8 @@ func (s *Service) ReopenTask(ctx context.Context, id int64) (Task, error) {
 	})
 }
 
-// DeleteTask permanently removes a task.
+// DeleteTask permanently removes a task, and with it any Subtasks it has
+// (the schema cascades).
 func (s *Service) DeleteTask(ctx context.Context, id int64) error {
 	return s.repo.Delete(ctx, id)
 }

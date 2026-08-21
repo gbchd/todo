@@ -28,9 +28,14 @@ func Open(ctx context.Context, path string) (*SQLiteRepository, error) {
 	// every statement on the connection that had pragmas applied to it.
 	db.SetMaxOpenConns(1)
 
+	// foreign_keys is load-bearing, not hygiene: tasks.parent_id is
+	// ON DELETE CASCADE, and SQLite defaults this pragma off per connection,
+	// so without it deleting a Parent Task silently orphans its Subtasks
+	// instead of removing them.
 	for _, pragma := range []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA busy_timeout=5000",
+		"PRAGMA foreign_keys=ON",
 	} {
 		if _, err := db.ExecContext(ctx, pragma); err != nil {
 			db.Close()

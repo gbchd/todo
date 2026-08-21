@@ -9,9 +9,15 @@ export interface Task {
   status: Status;
   priority: Priority;
   due_date: string | null;
+  parent_id: number | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+
+  // Derived, read-only: a parent task's rolled-up view of its subtasks.
+  child_count: number;
+  done_child_count: number;
+  any_child_overdue: boolean;
 }
 
 // Mirrors internal/transport/web/dto.go's createRequest.
@@ -20,6 +26,7 @@ export interface CreateTaskInput {
   description: string;
   priority: Priority;
   due_date: string | null;
+  parent_id?: number;
 }
 
 // Mirrors the partial-patch body internal/transport/web/handlers.go's
@@ -29,5 +36,7 @@ export interface TaskPatch {
   description?: string;
   priority?: Priority;
   due_date?: string | null;
+  // null promotes a subtask back to top level; absent leaves it untouched.
+  parent_id?: number | null;
   status?: Status;
 }

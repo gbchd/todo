@@ -25,7 +25,7 @@ func TestOpen_Migrates(t *testing.T) {
 	repo := openTestRepo(t)
 	var version int
 	require.NoError(t, repo.db.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version))
-	assert.Equal(t, 1, version)
+	assert.Equal(t, 2, version, "user_version must match the highest embedded migration")
 }
 
 func TestOpen_ReopenIsIdempotent(t *testing.T) {
@@ -175,4 +175,99 @@ func TestList_DueDateRange(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, late1.ID, got[0].ID)
+}
+
+// TestDelete_CascadesToSubtasks is the one failure mode a fake-repository unit
+// test cannot catch: SQLite defaults PRAGMA foreign_keys off per connection, so
+// without it ON DELETE CASCADE parses, migrates, and silently orphans children.
+func TestDelete_CascadesToSubtasks(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	parent, err := repo.Create(ctx, todo.Task{Title: "parent", Status: todo.StatusOpen, Priority: todo.PriorityNone, CreatedAt: now, UpdatedAt: now})
+	require.NoError(t, err, "create parent")
+
+	child, err := repo.Create(ctx, todo.Task{Title: "child", Status: todo.StatusOpen, Priority: todo.PriorityNone, ParentID: &parent.ID, CreatedAt: now, UpdatedAt: now})
+	require.NoError(t, err, "create child")
+
+	require.NoError(t, repo.Delete(ctx, parent.ID))
+
+	_, err = repo.Get(ctx, child.ID)
+	assert.ErrorIs(t, err, todo.ErrNotFound, "subtask must be deleted along with its parent")
+}
+
+func TestList_ParentIDFilter(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+	now := time.Now()
+	base := todo.Task{Status: todo.StatusOpen, Priority: todo.PriorityNone, CreatedAt: now, UpdatedAt: now}
+
+	parentTask := base
+	parentTask.Title = "parent"
+	parent, err := repo.Create(ctx, parentTask)
+	require.NoError(t, err)
+
+	childTask := base
+	childTask.Title, childTask.ParentID = "child", &parent.ID
+	child, err := repo.Create(ctx, childTask)
+	require.NoError(t, err)
+
+	topLevel, err := repo.List(ctx, todo.TaskFilter{ParentID: todo.Set[*int64](nil)})
+	require.NoError(t, err, "top-level list")
+	require.Len(t, topLevel, 1)
+	assert.Equal(t, parent.ID, topLevel[0].ID)
+
+	children, err := repo.List(ctx, todo.TaskFilter{ParentID: todo.Set(&parent.ID)})
+	require.NoError(t, err, "children list")
+	require.Len(t, children, 1)
+	assert.Equal(t, child.ID, children[0].ID)
+
+	all, err := repo.List(ctx, todo.TaskFilter{})
+	require.NoError(t, err, "unconstrained list")
+	assert.Len(t, all, 2, "an unset ParentID must stay unconstrained for existing callers")
+}
+
+func TestGet_RollsUpSubtaskState(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+	now := time.Now()
+	base := todo.Task{Status: todo.StatusOpen, Priority: todo.PriorityNone, CreatedAt: now, UpdatedAt: now}
+
+	parentTask := base
+	parentTask.Title = "parent"
+	parent, err := repo.Create(ctx, parentTask)
+	require.NoError(t, err)
+
+	overdue := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	openChild := base
+	openChild.Title, openChild.ParentID, openChild.DueDate = "overdue child", &parent.ID, &overdue
+	_, err = repo.Create(ctx, openChild)
+	require.NoError(t, err)
+
+	doneChild := base
+	doneChild.Title, doneChild.ParentID, doneChild.Status, doneChild.DueDate = "done child", &parent.ID, todo.StatusDone, &overdue
+	_, err = repo.Create(ctx, doneChild)
+	require.NoError(t, err)
+
+	got, err := repo.Get(ctx, parent.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, got.ChildCount)
+	assert.Equal(t, 1, got.DoneChildCount)
+	assert.True(t, got.AnyChildOverdue, "an open subtask past its due date makes the parent flag overdue")
+
+	// A parent whose only past-due subtask is already done is not overdue.
+	settledTask := base
+	settledTask.Title = "settled parent"
+	settled, err := repo.Create(ctx, settledTask)
+	require.NoError(t, err)
+	settledChild := base
+	settledChild.Title, settledChild.ParentID, settledChild.Status, settledChild.DueDate = "done child", &settled.ID, todo.StatusDone, &overdue
+	_, err = repo.Create(ctx, settledChild)
+	require.NoError(t, err)
+
+	got, err = repo.Get(ctx, settled.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, got.ChildCount)
+	assert.False(t, got.AnyChildOverdue, "a done subtask is never counted as overdue")
 }

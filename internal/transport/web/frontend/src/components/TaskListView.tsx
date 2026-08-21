@@ -16,8 +16,9 @@ import {
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
 import type { Status, Task } from "@/lib/types";
-import { priorityBadgeClass, statusBadgeClass, statusLabel } from "@/lib/format";
+import { priorityBadgeClass, statusBadgeClass, statusLabel, subtaskProgress } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { AlertTriangle, CornerDownRight } from "lucide-react";
 
 const STATUSES: Status[] = ["open", "in-progress", "done"];
 
@@ -86,13 +87,25 @@ export function TaskListView({ tasks, onSelect, onMoved }: TaskListViewProps) {
                   </Badge>
                 )}
               </TableCell>
-              <TableCell
-                className={cn(
-                  "font-medium",
-                  t.status === "done" && "text-muted-foreground line-through"
-                )}
-              >
-                {t.title}
+              <TableCell className="font-medium">
+                <span className="flex items-center gap-1.5">
+                  {t.parent_id !== null && (
+                    <CornerDownRight className="size-3.5 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className={cn(t.status === "done" && "text-muted-foreground line-through")}>
+                    {t.title}
+                  </span>
+                  {subtaskProgress(t) && (
+                    <span className="flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-xs font-normal text-muted-foreground">
+                      {subtaskProgress(t)}
+                      {/* Subtasks carry their own due dates, so a parent has to
+                          surface an overdue one that is hidden beneath it. */}
+                      {t.any_child_overdue && (
+                        <AlertTriangle className="size-3 text-red-600 dark:text-red-400" />
+                      )}
+                    </span>
+                  )}
+                </span>
               </TableCell>
               <TableCell className="text-muted-foreground">{t.due_date ?? "–"}</TableCell>
             </TableRow>

@@ -119,6 +119,7 @@ func addCommand(svc *todo.Service, stdout, stderr io.Writer) *tcli.Command {
 			&tcli.StringFlag{Name: "description"},
 			&tcli.StringFlag{Name: "priority", Value: string(todo.PriorityNone)},
 			&tcli.StringFlag{Name: "due"},
+			&tcli.IntFlag{Name: "parent", Usage: "id of the task this is a subtask of"},
 		},
 		Action: func(ctx context.Context, cmd *tcli.Command) error {
 			title := cmd.Args().First()
@@ -137,6 +138,10 @@ func addCommand(svc *todo.Service, stdout, stderr io.Writer) *tcli.Command {
 					return reportErr(stderr, err, 0)
 				}
 				input.DueDate = &d
+			}
+			if cmd.IsSet("parent") {
+				parent := int64(cmd.Int("parent"))
+				input.ParentID = &parent
 			}
 
 			t, err := svc.AddTask(ctx, input)
@@ -158,11 +163,23 @@ func listCommand(svc *todo.Service, stdout, stderr io.Writer, color bool) *tcli.
 			&tcli.StringFlag{Name: "priority"},
 			&tcli.StringFlag{Name: "due-before"},
 			&tcli.StringFlag{Name: "due-after"},
-			&tcli.BoolFlag{Name: "all"},
+			&tcli.BoolFlag{Name: "all", Usage: "show everything: done tasks and subtasks too"},
+			&tcli.IntFlag{Name: "parent", Usage: "show only the subtasks of this task"},
 			&tcli.StringFlag{Name: "sort"},
 		},
 		Action: func(ctx context.Context, cmd *tcli.Command) error {
 			filter := todo.TaskFilter{SortBy: todo.SortKey(cmd.String("sort"))}
+
+			// Subtasks are hidden through the filter rather than after the
+			// fact (the way done tasks are) because a hidden subtask still
+			// has to reach its parent's row as a rolled-up count.
+			switch {
+			case cmd.IsSet("parent"):
+				parent := int64(cmd.Int("parent"))
+				filter.ParentID = todo.Set(&parent)
+			case !cmd.Bool("all"):
+				filter.ParentID = todo.Set[*int64](nil)
+			}
 
 			if cmd.IsSet("status") {
 				s := todo.Status(cmd.String("status"))
@@ -242,6 +259,7 @@ func editCommand(svc *todo.Service, stdout, stderr io.Writer) *tcli.Command {
 			&tcli.StringFlag{Name: "description"},
 			&tcli.StringFlag{Name: "priority"},
 			&tcli.StringFlag{Name: "due"},
+			&tcli.StringFlag{Name: "parent", Usage: "id of the parent task, or \"none\" to promote to top level"},
 		},
 		Action: func(ctx context.Context, cmd *tcli.Command) error {
 			id, err := parseID(cmd.Args().First())
@@ -269,6 +287,18 @@ func editCommand(svc *todo.Service, stdout, stderr io.Writer) *tcli.Command {
 						return reportErr(stderr, err, 0)
 					}
 					patch.DueDate = todo.Set(&d)
+				}
+			}
+			if cmd.IsSet("parent") {
+				v := cmd.String("parent")
+				if v == "none" {
+					patch.ParentID = todo.Set[*int64](nil)
+				} else {
+					parent, err := parseID(v)
+					if err != nil {
+						return reportErr(stderr, err, 0)
+					}
+					patch.ParentID = todo.Set(&parent)
 				}
 			}
 
@@ -334,7 +364,9 @@ func deleteCommand(svc *todo.Service, stdin io.Reader, stdout, stderr io.Writer)
 			}
 
 			if !cmd.Bool("force") {
-				fmt.Fprintf(stdout, "Delete task #%d %q? [y/N] ", t.ID, t.Title)
+				// --force stays absolute: refusing on a task with subtasks
+				// would defeat the flag's only purpose.
+				fmt.Fprintf(stdout, "Delete task #%d %q%s? [y/N] ", t.ID, t.Title, subtaskSuffix(t.ChildCount))
 				if !confirm(stdin) {
 					fmt.Fprintln(stdout, "Aborted.")
 					return nil
@@ -347,6 +379,19 @@ func deleteCommand(svc *todo.Service, stdin io.Reader, stdout, stderr io.Writer)
 			fmt.Fprintf(stdout, "Deleted task #%d\n", id)
 			return nil
 		},
+	}
+}
+
+// subtaskSuffix is empty for a task with no subtasks, so the long-standing
+// delete prompt is unchanged byte for byte in the common case.
+func subtaskSuffix(childCount int) string {
+	switch childCount {
+	case 0:
+		return ""
+	case 1:
+		return " and its 1 subtask"
+	default:
+		return fmt.Sprintf(" and its %d subtasks", childCount)
 	}
 }
 

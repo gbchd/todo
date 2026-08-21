@@ -1,7 +1,7 @@
 import { useState, type DragEvent } from "react";
 import type { Status, Task } from "@/lib/types";
 import { api } from "@/lib/api";
-import { priorityBadgeClass } from "@/lib/format";
+import { priorityBadgeClass, subtaskProgress } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const COLUMNS: { status: Status; label: string }[] = [
@@ -78,7 +78,7 @@ export function TaskBoardView({ tasks, onSelect, onMoved }: TaskBoardViewProps) 
                     >
                       <span className="text-muted-foreground">#{t.id}</span> {t.title}
                     </div>
-                    {(t.priority !== "none" || t.due_date) && (
+                    {(t.priority !== "none" || t.due_date || subtaskProgress(t)) && (
                       <div className="mt-1.5 flex items-center gap-2 text-xs">
                         {t.priority !== "none" && (
                           <span className={cn("rounded-full px-1.5 py-0.5 capitalize", priorityBadgeClass(t.priority))}>
@@ -86,6 +86,17 @@ export function TaskBoardView({ tasks, onSelect, onMoved }: TaskBoardViewProps) 
                           </span>
                         )}
                         {t.due_date && <span className="text-muted-foreground">due {t.due_date}</span>}
+                        {subtaskProgress(t) && (
+                          <span
+                            className={cn(
+                              "rounded-full bg-muted px-1.5 py-0.5 text-muted-foreground",
+                              t.any_child_overdue && "text-red-600 dark:text-red-400"
+                            )}
+                          >
+                            {subtaskProgress(t)}
+                            {t.any_child_overdue && " !"}
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>

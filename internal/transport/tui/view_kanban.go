@@ -11,11 +11,11 @@ import (
 
 var columnTitles = [3]string{"Open", "In Progress", "Done"}
 
-const kanbanHelpLine = "←/→ column  ↑/↓ card  H/L move card  enter detail  a add  e edit  d delete  q quit"
+const kanbanHelpLine = "←/→ column  ↑/↓ card  H/L move card  enter detail  a add  e edit  d delete  s subtasks  q quit"
 
 func cardText(t todo.Task) string {
 	due := dueString(t)
-	line := fmt.Sprintf("#%d %s", t.ID, t.Title)
+	line := fmt.Sprintf("#%d %s%s%s", t.ID, indent(t), t.Title, rollup(t))
 	pri := priorityStyle(string(t.Priority)).Render(string(t.Priority))
 	return line + "\n" + pri + "  due " + due
 }
@@ -52,7 +52,7 @@ func (m model) viewKanban() string {
 		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, m.form.view(min(w-4, 60)))
 	case modeDetail:
 		if t, ok := m.selectedTask(); ok {
-			return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, viewDetail(t, min(w-4, 60)))
+			return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, viewDetail(t, m.detailChildren, min(w-4, 60)))
 		}
 	case modeConfirmDelete:
 		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, viewConfirm(m.pendingDeleteID))

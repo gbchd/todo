@@ -12,10 +12,14 @@ export default function App() {
   const [view, setView] = useState<View>("list");
   const [addOpen, setAddOpen] = useState(false);
   const [detailId, setDetailId] = useState<number | null>(null);
+  // Subtasks are hidden by default in all three interfaces; this is the web's
+  // reveal toggle. Hidden subtasks still reach their parent's row as a
+  // rolled-up count, which is why it filters server-side rather than here.
+  const [showSubtasks, setShowSubtasks] = useState(false);
 
   const refresh = useCallback(() => {
-    api.listTasks().then(setTasks);
-  }, []);
+    api.listTasks(showSubtasks ? undefined : "none").then(setTasks);
+  }, [showSubtasks]);
 
   useEffect(() => {
     refresh();
@@ -25,7 +29,13 @@ export default function App() {
 
   return (
     <div className="min-h-screen">
-      <Navbar view={view} onViewChange={setView} onAddClick={() => setAddOpen(true)} />
+      <Navbar
+        view={view}
+        onViewChange={setView}
+        onAddClick={() => setAddOpen(true)}
+        showSubtasks={showSubtasks}
+        onShowSubtasksChange={setShowSubtasks}
+      />
 
       <main className="mx-auto max-w-7xl p-6">
         {view === "list" ? (

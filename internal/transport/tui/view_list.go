@@ -9,12 +9,12 @@ import (
 	"github.com/gbchd/todo/internal/service/todo"
 )
 
-const helpLine = "↑/↓ nav  enter detail  a add  e edit  d delete  space advance  q quit"
+const helpLine = "↑/↓ nav  enter detail  a add  e edit  d delete  space advance  s subtasks  q quit"
 
 func rowText(t todo.Task) string {
 	due := dueString(t)
-	return fmt.Sprintf("%s #%-3d %-8s %-4s  %s  (due %s)",
-		statusGlyph(string(t.Status)), t.ID, t.Status, t.Priority, t.Title, due)
+	return fmt.Sprintf("%s #%-3d %-8s %-4s  %s%s%s  (due %s)",
+		statusGlyph(string(t.Status)), t.ID, t.Status, t.Priority, indent(t), t.Title, rollup(t), due)
 }
 
 func viewTaskList(tasks []todo.Task, cursor int) string {
@@ -45,7 +45,7 @@ func (m model) viewList() string {
 		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, m.form.view(min(w-4, 60)))
 	case modeDetail:
 		if t, ok := m.selectedTask(); ok {
-			return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, viewDetail(t, min(w-4, 60)))
+			return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, viewDetail(t, m.detailChildren, min(w-4, 60)))
 		}
 	case modeConfirmDelete:
 		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, viewConfirm(m.pendingDeleteID))

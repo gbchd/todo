@@ -62,9 +62,28 @@ func printTable(w io.Writer, tasks []todo.Task, color bool) {
 		}
 		status := colorize(string(t.Status), statusColor(t.Status), color)
 		priority := colorize(string(t.Priority), priorityColor(t.Priority), color)
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", t.ID, status, priority, t.Title, due)
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", t.ID, status, priority, titleCell(t), due)
 	}
 	tw.Flush()
+}
+
+// titleCell renders the TITLE column. A Subtask is indented beneath its
+// Parent Task, and a Parent Task carries its Subtasks' rolled-up progress plus
+// a "!" when one of them is overdue — without that marker, hiding subtasks by
+// default would make an overdue subtask invisible.
+func titleCell(t todo.Task) string {
+	title := t.Title
+	if t.IsSubtask() {
+		title = "└ " + title
+	}
+	if t.ChildCount == 0 {
+		return title
+	}
+	overdue := ""
+	if t.AnyChildOverdue {
+		overdue = " !"
+	}
+	return fmt.Sprintf("%s (%d/%d%s)", title, t.DoneChildCount, t.ChildCount, overdue)
 }
 
 // printDetail renders a single task as a labeled field-per-line view.
@@ -78,6 +97,16 @@ func printDetail(w io.Writer, t todo.Task, color bool) {
 		due = "-"
 	}
 	fmt.Fprintf(w, "Due:         %s\n", due)
+	if t.IsSubtask() {
+		fmt.Fprintf(w, "Parent:      #%d\n", *t.ParentID)
+	}
+	if t.ChildCount > 0 {
+		overdue := ""
+		if t.AnyChildOverdue {
+			overdue = " (one is overdue)"
+		}
+		fmt.Fprintf(w, "Subtasks:    %d/%d done%s\n", t.DoneChildCount, t.ChildCount, overdue)
+	}
 	fmt.Fprintf(w, "Created:     %s\n", t.CreatedAt.Format("2006-01-02 15:04"))
 	fmt.Fprintf(w, "Updated:     %s\n", t.UpdatedAt.Format("2006-01-02 15:04"))
 	if t.CompletedAt != nil {

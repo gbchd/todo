@@ -14,9 +14,15 @@ type taskDTO struct {
 	Status      string  `json:"status"`
 	Priority    string  `json:"priority"`
 	DueDate     *string `json:"due_date"`
+	ParentID    *int64  `json:"parent_id"`
 	CreatedAt   string  `json:"created_at"`
 	UpdatedAt   string  `json:"updated_at"`
 	CompletedAt *string `json:"completed_at"`
+
+	// Derived, read-only: a Parent Task's rolled-up view of its Subtasks.
+	ChildCount      int  `json:"child_count"`
+	DoneChildCount  int  `json:"done_child_count"`
+	AnyChildOverdue bool `json:"any_child_overdue"`
 }
 
 func toDTO(t todo.Task) taskDTO {
@@ -36,9 +42,14 @@ func toDTO(t todo.Task) taskDTO {
 		Status:      string(t.Status),
 		Priority:    string(t.Priority),
 		DueDate:     due,
+		ParentID:    t.ParentID,
 		CreatedAt:   t.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:   t.UpdatedAt.UTC().Format(time.RFC3339),
 		CompletedAt: completed,
+
+		ChildCount:      t.ChildCount,
+		DoneChildCount:  t.DoneChildCount,
+		AnyChildOverdue: t.AnyChildOverdue,
 	}
 }
 
@@ -50,10 +61,12 @@ func toDTOs(tasks []todo.Task) []taskDTO {
 	return out
 }
 
-// createRequest is the POST /api/tasks request body.
+// createRequest is the POST /api/tasks request body. A non-null parent_id
+// creates the task as a Subtask of that task.
 type createRequest struct {
 	Title       string  `json:"title"`
 	Description string  `json:"description"`
 	Priority    string  `json:"priority"`
 	DueDate     *string `json:"due_date"`
+	ParentID    *int64  `json:"parent_id"`
 }

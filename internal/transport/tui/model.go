@@ -58,6 +58,11 @@ type model struct {
 	cursor int
 	column int // kanban only
 
+	// showSubtasks is a viewing mode, not a preference: it resets on every
+	// launch rather than being persisted to config.
+	showSubtasks   bool
+	detailChildren []todo.Task
+
 	form            form
 	pendingDeleteID int64
 
@@ -89,7 +94,11 @@ func (m *model) reload() {
 		}
 	}
 
-	tasks, err := m.svc.ListTasks(m.ctx, todo.TaskFilter{})
+	filter := todo.TaskFilter{}
+	if !m.showSubtasks {
+		filter.ParentID = todo.Set[*int64](nil)
+	}
+	tasks, err := m.svc.ListTasks(m.ctx, filter)
 	if err != nil {
 		m.err = err
 		return
@@ -97,15 +106,37 @@ func (m *model) reload() {
 	m.err = nil
 	m.tasks = tasks
 
+	m.cursor = clamp(m.cursor, m.visibleCount()-1)
 	if hadSelection {
 		for i, t := range m.tasks {
 			if t.ID == prevID {
 				m.cursor = i
-				return
+				break
 			}
 		}
 	}
-	m.cursor = clamp(m.cursor, m.visibleCount()-1)
+	m.loadDetailChildren()
+}
+
+// loadDetailChildren refreshes the Subtask list the detail view shows. It uses
+// the same ParentID call path as `todo list --parent 4` rather than a dedicated
+// TaskWithChildren type.
+//
+// It has to follow the cursor, not just reload/enter: the split layout renders
+// the detail pane on every browse frame, so a stale list would show one task's
+// subtasks under another task's heading.
+func (m *model) loadDetailChildren() {
+	t, ok := m.selectedTask()
+	if !ok {
+		m.detailChildren = nil
+		return
+	}
+	children, err := m.svc.ListTasks(m.ctx, todo.TaskFilter{ParentID: todo.Set(&t.ID)})
+	if err != nil {
+		m.err = err
+		return
+	}
+	m.detailChildren = children
 }
 
 func (m model) size() (int, int) {
@@ -175,12 +206,14 @@ func (m *model) moveCursor(delta int) {
 		return
 	}
 	m.cursor = clamp(m.cursor+delta, n-1)
+	m.loadDetailChildren()
 }
 
 func (m *model) moveColumn(delta int) {
 	m.column = clamp(m.column+delta, 2)
 	n := len(m.groupedByStatus()[m.column])
 	m.cursor = clamp(m.cursor, n-1)
+	m.loadDetailChildren()
 }
 
 func nextStatus(s todo.Status) todo.Status {
@@ -302,7 +335,11 @@ func (m model) handleBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if _, ok := m.selectedTask(); ok {
 			m.mode = modeDetail
+			m.loadDetailChildren()
 		}
+	case "s":
+		m.showSubtasks = !m.showSubtasks
+		m.reload()
 	case "a":
 		m.form = formForAdd()
 		m.mode = modeForm
@@ -331,6 +368,13 @@ func (m model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "esc", "enter", "q":
 		m.mode = modeBrowse
+	case "a":
+		// Subtasks are only ever created from inside their parent, so "a"
+		// still means plain "add" everywhere else and the parent is implicit.
+		if t, ok := m.selectedTask(); ok && !t.IsSubtask() {
+			m.form = formForAddSubtask(t.ID)
+			m.mode = modeForm
+		}
 	case "e":
 		if t, ok := m.selectedTask(); ok {
 			m.form = formForEdit(t)
@@ -414,6 +458,7 @@ func (m model) submitForm() (tea.Model, tea.Cmd) {
 			Description: m.form.description.Value(),
 			Priority:    m.form.priority,
 			DueDate:     due,
+			ParentID:    m.form.parentID,
 		})
 	} else {
 		_, err = m.svc.UpdateTask(m.ctx, m.form.editingID, todo.TaskPatch{
@@ -427,7 +472,12 @@ func (m model) submitForm() (tea.Model, tea.Cmd) {
 		m.form.err = err.Error()
 		return m, nil
 	}
+	// A subtask was added from its parent's detail view; go back to it so the
+	// new subtask shows up where it was created.
 	m.mode = modeBrowse
+	if m.form.parentID != nil {
+		m.mode = modeDetail
+	}
 	m.reload()
 	return m, nil
 }

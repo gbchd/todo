@@ -13,7 +13,21 @@ import (
 const (
 	timestampLayout = time.RFC3339
 
-	taskColumns = "id, title, description, status, priority, due_date, created_at, updated_at, completed_at"
+	// selectTasks is the only way a task row is read. The self-join rolls up
+	// each task's Subtasks into the derived ChildCount/DoneChildCount/
+	// AnyChildOverdue fields, so those are populated identically by Get and
+	// List rather than being real on one path and zero on the other.
+	//
+	// date('now','localtime') is the machine's calendar day, which is what a
+	// day-granularity due date on a single-machine app means; comparing
+	// against UTC would call a task overdue a few hours early or late.
+	selectTasks = `SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, t.parent_id,
+	       t.created_at, t.updated_at, t.completed_at,
+	       COUNT(c.id),
+	       COALESCE(SUM(c.status = 'done'), 0),
+	       COALESCE(MAX(c.status <> 'done' AND c.due_date IS NOT NULL AND c.due_date < date('now','localtime')), 0)
+	  FROM tasks t
+	  LEFT JOIN tasks c ON c.parent_id = t.id`
 )
 
 func formatTimestamp(t time.Time) string { return t.UTC().Format(timestampLayout) }
@@ -40,6 +54,13 @@ func nullDate(t *time.Time) sql.NullString {
 	return sql.NullString{String: formatDate(*t), Valid: true}
 }
 
+func nullID(id *int64) sql.NullInt64 {
+	if id == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: *id, Valid: true}
+}
+
 // scanner is satisfied by both *sql.Row and *sql.Rows.
 type scanner interface {
 	Scan(dest ...any) error
@@ -56,16 +77,26 @@ func scanTask(row scanner) (todo.Task, error) {
 	var (
 		t                                 todo.Task
 		description, dueDate, completedAt sql.NullString
+		parentID                          sql.NullInt64
 		status, priority                  string
 		createdAt, updatedAt              string
+		anyChildOverdue                   int
 	)
-	if err := row.Scan(&t.ID, &t.Title, &description, &status, &priority, &dueDate, &createdAt, &updatedAt, &completedAt); err != nil {
+	if err := row.Scan(&t.ID, &t.Title, &description, &status, &priority, &dueDate, &parentID,
+		&createdAt, &updatedAt, &completedAt,
+		&t.ChildCount, &t.DoneChildCount, &anyChildOverdue); err != nil {
 		return todo.Task{}, err
 	}
 
 	t.Description = description.String
 	t.Status = todo.Status(status)
 	t.Priority = todo.Priority(priority)
+	t.AnyChildOverdue = anyChildOverdue != 0
+
+	if parentID.Valid {
+		id := parentID.Int64
+		t.ParentID = &id
+	}
 
 	if dueDate.Valid {
 		d, err := time.Parse(todo.DateLayout, dueDate.String)
@@ -101,10 +132,11 @@ func scanTask(row scanner) (todo.Task, error) {
 // Create inserts t and returns the stored row (with id assigned).
 func (r *SQLiteRepository) Create(ctx context.Context, t todo.Task) (todo.Task, error) {
 	res, err := r.db.ExecContext(ctx,
-		`INSERT INTO tasks (title, description, status, priority, due_date, created_at, updated_at, completed_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO tasks (title, description, status, priority, due_date, parent_id, created_at, updated_at, completed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.Title, nullString(t.Description), string(t.Status), string(t.Priority),
-		nullDate(t.DueDate), formatTimestamp(t.CreatedAt), formatTimestamp(t.UpdatedAt), nullTimestamp(t.CompletedAt),
+		nullDate(t.DueDate), nullID(t.ParentID),
+		formatTimestamp(t.CreatedAt), formatTimestamp(t.UpdatedAt), nullTimestamp(t.CompletedAt),
 	)
 	if err != nil {
 		return todo.Task{}, fmt.Errorf("insert task: %w", err)
@@ -122,7 +154,7 @@ func (r *SQLiteRepository) Get(ctx context.Context, id int64) (todo.Task, error)
 }
 
 func getTask(ctx context.Context, q queryExecer, id int64) (todo.Task, error) {
-	row := q.QueryRowContext(ctx, "SELECT "+taskColumns+" FROM tasks WHERE id = ?", id)
+	row := q.QueryRowContext(ctx, selectTasks+" WHERE t.id = ? GROUP BY t.id", id)
 	t, err := scanTask(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return todo.Task{}, todo.ErrNotFound
@@ -140,10 +172,12 @@ func (r *SQLiteRepository) Update(ctx context.Context, t todo.Task) (todo.Task, 
 
 func updateTask(ctx context.Context, q queryExecer, t todo.Task) (todo.Task, error) {
 	res, err := q.ExecContext(ctx,
-		`UPDATE tasks SET title=?, description=?, status=?, priority=?, due_date=?, created_at=?, updated_at=?, completed_at=?
+		`UPDATE tasks SET title=?, description=?, status=?, priority=?, due_date=?, parent_id=?,
+		        created_at=?, updated_at=?, completed_at=?
 		 WHERE id=?`,
 		t.Title, nullString(t.Description), string(t.Status), string(t.Priority),
-		nullDate(t.DueDate), formatTimestamp(t.CreatedAt), formatTimestamp(t.UpdatedAt), nullTimestamp(t.CompletedAt),
+		nullDate(t.DueDate), nullID(t.ParentID),
+		formatTimestamp(t.CreatedAt), formatTimestamp(t.UpdatedAt), nullTimestamp(t.CompletedAt),
 		t.ID,
 	)
 	if err != nil {
@@ -212,26 +246,34 @@ func (r *SQLiteRepository) Delete(ctx context.Context, id int64) error {
 // List returns tasks matching filter, ordered by id (Service applies the
 // final user-facing sort).
 func (r *SQLiteRepository) List(ctx context.Context, filter todo.TaskFilter) ([]todo.Task, error) {
-	query := "SELECT " + taskColumns + " FROM tasks WHERE 1=1"
+	query := selectTasks + " WHERE 1=1"
 	var args []any
 
 	if filter.Status != nil {
-		query += " AND status = ?"
+		query += " AND t.status = ?"
 		args = append(args, string(*filter.Status))
 	}
 	if filter.Priority != nil {
-		query += " AND priority = ?"
+		query += " AND t.priority = ?"
 		args = append(args, string(*filter.Priority))
 	}
 	if filter.DueBefore != nil {
-		query += " AND due_date IS NOT NULL AND due_date < ?"
+		query += " AND t.due_date IS NOT NULL AND t.due_date < ?"
 		args = append(args, formatDate(*filter.DueBefore))
 	}
 	if filter.DueAfter != nil {
-		query += " AND due_date IS NOT NULL AND due_date > ?"
+		query += " AND t.due_date IS NOT NULL AND t.due_date > ?"
 		args = append(args, formatDate(*filter.DueAfter))
 	}
-	query += " ORDER BY id"
+	if filter.ParentID.IsSet() {
+		if parent := filter.ParentID.Value(); parent == nil {
+			query += " AND t.parent_id IS NULL"
+		} else {
+			query += " AND t.parent_id = ?"
+			args = append(args, *parent)
+		}
+	}
+	query += " GROUP BY t.id ORDER BY t.id"
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {

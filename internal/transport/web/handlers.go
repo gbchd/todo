@@ -65,9 +65,27 @@ func pathID(r *http.Request) (int64, error) {
 	return strconv.ParseInt(r.PathValue("id"), 10, 64)
 }
 
+// listTasks reads the tri-state ?parent= query parameter: absent leaves the
+// listing unconstrained (what every caller got before subtasks existed),
+// "none" restricts it to top-level tasks, and an id restricts it to that
+// task's Subtasks.
 func listTasks(svc *todo.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tasks, err := svc.ListTasks(r.Context(), todo.TaskFilter{})
+		filter := todo.TaskFilter{}
+		if raw := r.URL.Query().Get("parent"); raw != "" {
+			if raw == "none" {
+				filter.ParentID = todo.Set[*int64](nil)
+			} else {
+				id, err := strconv.ParseInt(raw, 10, 64)
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid parent"})
+					return
+				}
+				filter.ParentID = todo.Set(&id)
+			}
+		}
+
+		tasks, err := svc.ListTasks(r.Context(), filter)
 		if err != nil {
 			writeError(w, err)
 			return
@@ -97,6 +115,7 @@ func createTask(svc *todo.Service) http.HandlerFunc {
 			}
 			input.DueDate = &d
 		}
+		input.ParentID = req.ParentID
 
 		t, err := svc.AddTask(r.Context(), input)
 		if err != nil {
@@ -124,9 +143,10 @@ func getTask(svc *todo.Service) http.HandlerFunc {
 }
 
 // patchTask applies a partial patch. Any subset of
-// title/description/priority/due_date/status may be present; absent keys
-// are left untouched. due_date's JSON null explicitly clears it, mirroring
-// the tri-state semantics of todo.TaskPatch.
+// title/description/priority/due_date/parent_id/status may be present; absent
+// keys are left untouched. A JSON null clears due_date, and promotes a Subtask
+// back to top level for parent_id — the key-presence check is exactly the
+// tri-state todo.Optional expects, so no extra machinery is needed.
 func patchTask(svc *todo.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := pathID(r)
@@ -173,7 +193,8 @@ func patchTask(svc *todo.Service) http.HandlerFunc {
 }
 
 func hasPatch(p todo.TaskPatch) bool {
-	return p.Title.IsSet() || p.Description.IsSet() || p.Priority.IsSet() || p.DueDate.IsSet()
+	return p.Title.IsSet() || p.Description.IsSet() || p.Priority.IsSet() ||
+		p.DueDate.IsSet() || p.ParentID.IsSet()
 }
 
 func parsePatch(body map[string]json.RawMessage) (todo.TaskPatch, *todo.Status, error) {
@@ -214,6 +235,14 @@ func parsePatch(body map[string]json.RawMessage) (todo.TaskPatch, *todo.Status, 
 			}
 			patch.DueDate = todo.Set(&d)
 		}
+	}
+
+	if raw, ok := body["parent_id"]; ok {
+		var v *int64
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return patch, nil, errors.New("invalid parent_id")
+		}
+		patch.ParentID = todo.Set(v)
 	}
 
 	var statusChange *todo.Status

@@ -5,8 +5,16 @@ A single-user, single-machine task tracker: one shared domain model for a Task a
 ## Language
 
 **Task**
-A single actionable to-do item — the only entity in this domain. Identified by a permanent, auto-incrementing id that is never reused or renumbered after deletion.
+A single actionable to-do item — the only kind of entity in this domain. Identified by a permanent, auto-incrementing id that is never reused or renumbered after deletion. A Task may have a parent, or may have Subtasks of its own, but never both.
 _Avoid_: Item, todo, entry
+
+**Subtask**
+A role a Task plays, not a separate entity: a Task that has a parent. A Subtask is a Task in every respect — it has its own Status, Priority, and Due Date, and is worked and completed independently of its parent.
+_Avoid_: Child, step, checklist item
+
+**Parent Task**
+A Task that has Subtasks. Its Status is never derived from theirs — a Parent Task may be `done` while its Subtasks are still `open`, and completing the last Subtask never completes the parent.
+_Avoid_: Epic, group, container
 
 **Status**
 A Task's place in its lifecycle: `open` (not started), `in-progress` (actively being worked), or `done` (finished). A Task begins `open`; reopening a `done` Task returns it to `open`, never directly to `in-progress`.

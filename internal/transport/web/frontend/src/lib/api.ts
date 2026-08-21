@@ -16,7 +16,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  listTasks: () => request<Task[]>("/api/tasks"),
+  // parent: "none" for top-level tasks only, an id for that task's subtasks,
+  // omitted for everything at once.
+  listTasks: (parent?: number | "none") =>
+    request<Task[]>(parent === undefined ? "/api/tasks" : `/api/tasks?parent=${parent}`),
 
   createTask: (input: CreateTaskInput) =>
     request<Task>("/api/tasks", { method: "POST", body: JSON.stringify(input) }),
