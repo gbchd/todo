@@ -11,7 +11,6 @@ import (
 
 	"github.com/gbchd/todo/internal/repository"
 	"github.com/gbchd/todo/internal/service/todo"
-	"github.com/gbchd/todo/internal/transport/statusverb"
 )
 
 func newTestModel(t *testing.T, layout layoutKind) model {
@@ -239,9 +238,9 @@ func newKanbanFixture(t *testing.T) (model, [4]int64) {
 		require.NoError(t, err, "seed %s", title)
 		ids[i] = task.ID
 	}
-	_, err = statusverb.Apply(ctx, svc, ids[0], todo.StatusInProgress)
+	_, err = svc.UpdateTask(ctx, ids[0], todo.TaskPatch{Status: todo.Set(todo.StatusInProgress)})
 	require.NoError(t, err)
-	_, err = statusverb.Apply(ctx, svc, ids[1], todo.StatusInProgress)
+	_, err = svc.UpdateTask(ctx, ids[1], todo.TaskPatch{Status: todo.Set(todo.StatusInProgress)})
 	require.NoError(t, err)
 
 	return newModel(ctx, svc, layoutKanban), ids
