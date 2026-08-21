@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ErrorMessage } from "@/components/ErrorMessage";
 import { api } from "@/lib/api";
-import type { Status, Task } from "@/lib/types";
+import { errorMessage } from "@/lib/errors";
+import { NEXT_STATUS } from "@/lib/status";
+import type { Task } from "@/lib/types";
 import { statusBadgeClass, statusLabel } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Plus } from "lucide-react";
@@ -12,14 +15,6 @@ interface SubtaskSectionProps {
   onChanged: () => void;
 }
 
-// The next status in the open → in-progress → done → open cycle, matching the
-// TUI's space bar and keeping one status model across all three interfaces.
-const NEXT_STATUS: Record<Status, Status> = {
-  open: "in-progress",
-  "in-progress": "done",
-  done: "open",
-};
-
 // SubtaskSection is the only place the web UI creates a subtask: you make one
 // from inside its parent, so there is never a parent picker to get wrong.
 export function SubtaskSection({ parent, onChanged }: SubtaskSectionProps) {
@@ -28,9 +23,12 @@ export function SubtaskSection({ parent, onChanged }: SubtaskSectionProps) {
   const [error, setError] = useState("");
 
   // Children are fetched through the same ?parent= call path the CLI's
-  // --parent uses, rather than a bespoke "task with children" payload.
+  // --parent uses, rather than a bespoke "task with children" payload. This
+  // stays a local fetch (rather than reading off App's own `tasks`) because
+  // when the App-level "show subtasks" toggle is off, App's `tasks` never
+  // contains the children at all.
   const load = useCallback(() => {
-    api.listTasks(parent.id).then(setChildren).catch(() => setChildren([]));
+    api.listTasks(parent.id).then(setChildren).catch((err) => setError(errorMessage(err)));
   }, [parent.id]);
 
   useEffect(() => {
@@ -41,26 +39,35 @@ export function SubtaskSection({ parent, onChanged }: SubtaskSectionProps) {
     e.preventDefault();
     if (!title.trim()) return;
     try {
-      await api.createTask({
+      const created = await api.createTask({
         title,
         description: "",
         priority: "none",
         due_date: null,
         parent_id: parent.id,
       });
+      setChildren((cs) => [...cs, created]);
       setTitle("");
       setError("");
-      load();
       onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err));
     }
   }
 
+  // Uses the patch response to update the local list in place instead of
+  // re-fetching it, so one click only triggers one refetch: onChanged()'s,
+  // which keeps the parent's rolled-up counts (shown here and in the list/
+  // board views) in sync.
   async function handleAdvance(child: Task) {
-    await api.patchTask(child.id, { status: NEXT_STATUS[child.status] });
-    load();
-    onChanged();
+    try {
+      const updated = await api.patchTask(child.id, { status: NEXT_STATUS[child.status] });
+      setChildren((cs) => cs.map((c) => (c.id === updated.id ? updated : c)));
+      setError("");
+      onChanged();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
   }
 
   return (
@@ -111,7 +118,7 @@ export function SubtaskSection({ parent, onChanged }: SubtaskSectionProps) {
         </Button>
       </form>
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      <ErrorMessage message={error || null} />
     </div>
   );
 }
