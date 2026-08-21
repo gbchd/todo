@@ -20,6 +20,13 @@ import (
 	"github.com/gbchd/todo/internal/service/todo"
 )
 
+// serviceHolder gives subcommand closures a stable handle onto the Service,
+// which doesn't exist yet when the command tree is built: the root
+// command's Before hook is what resolves --db and constructs it.
+type serviceHolder struct {
+	svc *todo.Service
+}
+
 // TUILauncher starts the TUI adapter; wired to internal/transport/tui.Run
 // by cmd/todo/main.go. Kept as an injected function so cli tests never
 // launch an interactive program.
@@ -29,22 +36,14 @@ type TUILauncher func(ctx context.Context, svc *todo.Service, layout string, std
 type ServeLauncher func(ctx context.Context, svc *todo.Service, addr string, stdout io.Writer) error
 
 // Run parses args and executes the matching todo subcommand, returning the
-// process exit code. It resolves the SQLite database path (--db flag, else
-// cfg.DBPath), opens the repository, and builds the Service itself, so
-// tests can drive it end-to-end against a seeded temp-file database.
+// process exit code. urfave/cli is the single parser for --db: the root
+// command's Before hook opens the repository and builds the Service once
+// the flag's real, fully-parsed value is available, so tests can drive
+// this end-to-end against a seeded temp-file database.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, cfg config.Config, runTUI TUILauncher, runServe ServeLauncher) int {
-	dbPath := resolveDBFlag(args, cfg.DBPath)
-
-	repo, err := repository.Open(ctx, dbPath)
-	if err != nil {
-		fmt.Fprintln(stderr, "Error:", err)
-		return 1
-	}
-	defer repo.Close()
-	svc := todo.NewService(repo)
-
+	holder := &serviceHolder{}
 	color := isTTY(stdout)
-	root := buildRoot(svc, cfg, stdin, stdout, stderr, color, runTUI, runServe)
+	root := buildRoot(holder, cfg, stdin, stdout, stderr, color, runTUI, runServe)
 
 	if err := root.Run(ctx, args); err != nil {
 		var ec tcli.ExitCoder
@@ -65,18 +64,6 @@ func isTTY(w io.Writer) bool {
 	return term.IsTerminal(int(f.Fd()))
 }
 
-func resolveDBFlag(args []string, fallback string) string {
-	for i, a := range args {
-		if a == "--db" && i+1 < len(args) {
-			return args[i+1]
-		}
-		if rest, ok := strings.CutPrefix(a, "--db="); ok {
-			return rest
-		}
-	}
-	return fallback
-}
-
 func parseID(s string) (int64, error) {
 	id, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
@@ -85,7 +72,9 @@ func parseID(s string) (int64, error) {
 	return id, nil
 }
 
-func buildRoot(svc *todo.Service, cfg config.Config, stdin io.Reader, stdout, stderr io.Writer, color bool, runTUI TUILauncher, runServe ServeLauncher) *tcli.Command {
+func buildRoot(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout, stderr io.Writer, color bool, runTUI TUILauncher, runServe ServeLauncher) *tcli.Command {
+	var repo *repository.SQLiteRepository
+
 	return &tcli.Command{
 		Name:      "todo",
 		Usage:     "a personal todo app",
@@ -95,22 +84,38 @@ func buildRoot(svc *todo.Service, cfg config.Config, stdin io.Reader, stdout, st
 			&tcli.StringFlag{Name: "db", Usage: "path to the SQLite database", Value: cfg.DBPath},
 		},
 		ExitErrHandler: func(context.Context, *tcli.Command, error) {},
+		Before: func(ctx context.Context, cmd *tcli.Command) (context.Context, error) {
+			r, err := repository.Open(ctx, cmd.String("db"))
+			if err != nil {
+				fmt.Fprintln(stderr, "Error:", err)
+				return ctx, tcli.Exit(err, 1)
+			}
+			repo = r
+			holder.svc = todo.NewService(repo)
+			return ctx, nil
+		},
+		After: func(context.Context, *tcli.Command) error {
+			if repo != nil {
+				_ = repo.Close()
+			}
+			return nil
+		},
 		Commands: []*tcli.Command{
-			addCommand(svc, stdout, stderr),
-			listCommand(svc, stdout, stderr, color),
-			showCommand(svc, stdout, stderr, color),
-			editCommand(svc, stdout, stderr),
-			startCommand(svc, stdout, stderr),
-			doneCommand(svc, stdout, stderr),
-			reopenCommand(svc, stdout, stderr),
-			deleteCommand(svc, stdin, stdout, stderr),
-			tuiCommand(svc, cfg, stdin, stdout, runTUI),
-			serveCommand(svc, cfg, stdout, runServe),
+			addCommand(holder, stdout, stderr),
+			listCommand(holder, stdout, stderr, color),
+			showCommand(holder, stdout, stderr, color),
+			editCommand(holder, stdout, stderr),
+			startCommand(holder, stdout, stderr),
+			doneCommand(holder, stdout, stderr),
+			reopenCommand(holder, stdout, stderr),
+			deleteCommand(holder, stdin, stdout, stderr),
+			tuiCommand(holder, cfg, stdin, stdout, runTUI),
+			serveCommand(holder, cfg, stdout, runServe),
 		},
 	}
 }
 
-func addCommand(svc *todo.Service, stdout, stderr io.Writer) *tcli.Command {
+func addCommand(holder *serviceHolder, stdout, stderr io.Writer) *tcli.Command {
 	return &tcli.Command{
 		Name:      "add",
 		Usage:     "add a new task",
@@ -144,7 +149,7 @@ func addCommand(svc *todo.Service, stdout, stderr io.Writer) *tcli.Command {
 				input.ParentID = &parent
 			}
 
-			t, err := svc.AddTask(ctx, input)
+			t, err := holder.svc.AddTask(ctx, input)
 			if err != nil {
 				return reportErr(stderr, err, 0)
 			}
@@ -154,7 +159,7 @@ func addCommand(svc *todo.Service, stdout, stderr io.Writer) *tcli.Command {
 	}
 }
 
-func listCommand(svc *todo.Service, stdout, stderr io.Writer, color bool) *tcli.Command {
+func listCommand(holder *serviceHolder, stdout, stderr io.Writer, color bool) *tcli.Command {
 	return &tcli.Command{
 		Name:  "list",
 		Usage: "list tasks",
@@ -204,7 +209,7 @@ func listCommand(svc *todo.Service, stdout, stderr io.Writer, color bool) *tcli.
 				filter.DueAfter = &d
 			}
 
-			tasks, err := svc.ListTasks(ctx, filter)
+			tasks, err := holder.svc.ListTasks(ctx, filter)
 			if err != nil {
 				return reportErr(stderr, err, 0)
 			}
@@ -229,7 +234,7 @@ func hideDone(tasks []todo.Task) []todo.Task {
 	return out
 }
 
-func showCommand(svc *todo.Service, stdout, stderr io.Writer, color bool) *tcli.Command {
+func showCommand(holder *serviceHolder, stdout, stderr io.Writer, color bool) *tcli.Command {
 	return &tcli.Command{
 		Name:      "show",
 		Usage:     "show full detail for a task",
@@ -239,7 +244,7 @@ func showCommand(svc *todo.Service, stdout, stderr io.Writer, color bool) *tcli.
 			if err != nil {
 				return reportErr(stderr, err, 0)
 			}
-			t, err := svc.GetTask(ctx, id)
+			t, err := holder.svc.GetTask(ctx, id)
 			if err != nil {
 				return reportErr(stderr, err, id)
 			}
@@ -249,7 +254,7 @@ func showCommand(svc *todo.Service, stdout, stderr io.Writer, color bool) *tcli.
 	}
 }
 
-func editCommand(svc *todo.Service, stdout, stderr io.Writer) *tcli.Command {
+func editCommand(holder *serviceHolder, stdout, stderr io.Writer) *tcli.Command {
 	return &tcli.Command{
 		Name:      "edit",
 		Usage:     "edit a task",
@@ -302,7 +307,7 @@ func editCommand(svc *todo.Service, stdout, stderr io.Writer) *tcli.Command {
 				}
 			}
 
-			t, err := svc.UpdateTask(ctx, id, patch)
+			t, err := holder.svc.UpdateTask(ctx, id, patch)
 			if err != nil {
 				return reportErr(stderr, err, id)
 			}
@@ -312,19 +317,28 @@ func editCommand(svc *todo.Service, stdout, stderr io.Writer) *tcli.Command {
 	}
 }
 
-func startCommand(svc *todo.Service, stdout, stderr io.Writer) *tcli.Command {
-	return verbCommand("start", "mark a task in-progress", stdout, stderr, svc.StartTask)
+func startCommand(holder *serviceHolder, stdout, stderr io.Writer) *tcli.Command {
+	return verbCommand("start", "mark a task in-progress", holder, stdout, stderr, func(svc *todo.Service) func(context.Context, int64) (todo.Task, error) {
+		return svc.StartTask
+	})
 }
 
-func doneCommand(svc *todo.Service, stdout, stderr io.Writer) *tcli.Command {
-	return verbCommand("done", "mark a task done", stdout, stderr, svc.CompleteTask)
+func doneCommand(holder *serviceHolder, stdout, stderr io.Writer) *tcli.Command {
+	return verbCommand("done", "mark a task done", holder, stdout, stderr, func(svc *todo.Service) func(context.Context, int64) (todo.Task, error) {
+		return svc.CompleteTask
+	})
 }
 
-func reopenCommand(svc *todo.Service, stdout, stderr io.Writer) *tcli.Command {
-	return verbCommand("reopen", "reopen a done task", stdout, stderr, svc.ReopenTask)
+func reopenCommand(holder *serviceHolder, stdout, stderr io.Writer) *tcli.Command {
+	return verbCommand("reopen", "reopen a done task", holder, stdout, stderr, func(svc *todo.Service) func(context.Context, int64) (todo.Task, error) {
+		return svc.ReopenTask
+	})
 }
 
-func verbCommand(name, usage string, stdout, stderr io.Writer, verb func(context.Context, int64) (todo.Task, error)) *tcli.Command {
+// verbCommand builds a single-argument lifecycle command (start/done/reopen).
+// selectVerb defers picking the Service method until the Action runs, since
+// holder.svc isn't populated until the root command's Before hook fires.
+func verbCommand(name, usage string, holder *serviceHolder, stdout, stderr io.Writer, selectVerb func(*todo.Service) func(context.Context, int64) (todo.Task, error)) *tcli.Command {
 	return &tcli.Command{
 		Name:      name,
 		Usage:     usage,
@@ -334,7 +348,7 @@ func verbCommand(name, usage string, stdout, stderr io.Writer, verb func(context
 			if err != nil {
 				return reportErr(stderr, err, 0)
 			}
-			t, err := verb(ctx, id)
+			t, err := selectVerb(holder.svc)(ctx, id)
 			if err != nil {
 				return reportErr(stderr, err, id)
 			}
@@ -344,7 +358,7 @@ func verbCommand(name, usage string, stdout, stderr io.Writer, verb func(context
 	}
 }
 
-func deleteCommand(svc *todo.Service, stdin io.Reader, stdout, stderr io.Writer) *tcli.Command {
+func deleteCommand(holder *serviceHolder, stdin io.Reader, stdout, stderr io.Writer) *tcli.Command {
 	return &tcli.Command{
 		Name:      "delete",
 		Usage:     "delete a task",
@@ -358,7 +372,7 @@ func deleteCommand(svc *todo.Service, stdin io.Reader, stdout, stderr io.Writer)
 				return reportErr(stderr, err, 0)
 			}
 
-			t, err := svc.GetTask(ctx, id)
+			t, err := holder.svc.GetTask(ctx, id)
 			if err != nil {
 				return reportErr(stderr, err, id)
 			}
@@ -373,7 +387,7 @@ func deleteCommand(svc *todo.Service, stdin io.Reader, stdout, stderr io.Writer)
 				}
 			}
 
-			if err := svc.DeleteTask(ctx, id); err != nil {
+			if err := holder.svc.DeleteTask(ctx, id); err != nil {
 				return reportErr(stderr, err, id)
 			}
 			fmt.Fprintf(stdout, "Deleted task #%d\n", id)
@@ -402,7 +416,7 @@ func confirm(r io.Reader) bool {
 	return line == "y" || line == "yes"
 }
 
-func tuiCommand(svc *todo.Service, cfg config.Config, stdin io.Reader, stdout io.Writer, runTUI TUILauncher) *tcli.Command {
+func tuiCommand(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout io.Writer, runTUI TUILauncher) *tcli.Command {
 	return &tcli.Command{
 		Name:  "tui",
 		Usage: "launch the interactive terminal UI",
@@ -410,12 +424,12 @@ func tuiCommand(svc *todo.Service, cfg config.Config, stdin io.Reader, stdout io
 			&tcli.StringFlag{Name: "layout", Value: cfg.TUILayout, Usage: "list|split|kanban"},
 		},
 		Action: func(ctx context.Context, cmd *tcli.Command) error {
-			return runTUI(ctx, svc, cmd.String("layout"), stdin, stdout)
+			return runTUI(ctx, holder.svc, cmd.String("layout"), stdin, stdout)
 		},
 	}
 }
 
-func serveCommand(svc *todo.Service, cfg config.Config, stdout io.Writer, runServe ServeLauncher) *tcli.Command {
+func serveCommand(holder *serviceHolder, cfg config.Config, stdout io.Writer, runServe ServeLauncher) *tcli.Command {
 	return &tcli.Command{
 		Name:  "serve",
 		Usage: "launch the local web UI",
@@ -424,7 +438,7 @@ func serveCommand(svc *todo.Service, cfg config.Config, stdout io.Writer, runSer
 		},
 		Action: func(ctx context.Context, cmd *tcli.Command) error {
 			addr := fmt.Sprintf("127.0.0.1:%d", cmd.Int("port"))
-			return runServe(ctx, svc, addr, stdout)
+			return runServe(ctx, holder.svc, addr, stdout)
 		},
 	}
 }

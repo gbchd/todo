@@ -65,6 +65,45 @@ func TestAdd_MissingTitle(t *testing.T) {
 	assert.Contains(t, stderr, "Error:")
 }
 
+// TestDBFlag_AllStyles guards against urfave/cli and any hand-rolled flag
+// scan disagreeing about --db. All three styles urfave/cli itself accepts
+// for a StringFlag must resolve to the same, single database path.
+func TestDBFlag_AllStyles(t *testing.T) {
+	tests := []struct {
+		name   string
+		dbArgs func(path string) []string
+	}{
+		{"double-dash space", func(p string) []string { return []string{"--db", p} }},
+		{"double-dash equals", func(p string) []string { return []string{"--db=" + p} }},
+		{"single-dash space", func(p string) []string { return []string{"-db", p} }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dbPath := newDB(t)
+			tui, serve := noopLaunchers()
+			title := "task via " + tt.name
+
+			var outBuf, errBuf bytes.Buffer
+			addArgs := append([]string{"todo"}, tt.dbArgs(dbPath)...)
+			addArgs = append(addArgs, "add", title)
+			code := Run(context.Background(), addArgs, strings.NewReader(""), &outBuf, &errBuf, config.Config{}, tui, serve)
+			require.Equal(t, 0, code, "add: stdout=%q stderr=%q", outBuf.String(), errBuf.String())
+
+			_, statErr := os.Stat(dbPath)
+			require.NoError(t, statErr, "expected the --db path to be created at %s", dbPath)
+
+			outBuf.Reset()
+			errBuf.Reset()
+			listArgs := append([]string{"todo"}, tt.dbArgs(dbPath)...)
+			listArgs = append(listArgs, "list")
+			code = Run(context.Background(), listArgs, strings.NewReader(""), &outBuf, &errBuf, config.Config{}, tui, serve)
+			require.Equal(t, 0, code, "list: stderr=%q", errBuf.String())
+			assert.Contains(t, outBuf.String(), title, "task added via one invocation must be visible to a later invocation against the same --db path")
+		})
+	}
+}
+
 func TestShow_NotFound(t *testing.T) {
 	dbPath := newDB(t)
 	_, stderr, code := runCLI(t, dbPath, "show", "42")
