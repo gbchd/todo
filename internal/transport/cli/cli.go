@@ -318,27 +318,22 @@ func editCommand(holder *serviceHolder, stdout, stderr io.Writer) *tcli.Command 
 }
 
 func startCommand(holder *serviceHolder, stdout, stderr io.Writer) *tcli.Command {
-	return verbCommand("start", "mark a task in-progress", holder, stdout, stderr, func(svc *todo.Service) func(context.Context, int64) (todo.Task, error) {
-		return svc.StartTask
-	})
+	return verbCommand("start", "mark a task in-progress", holder, stdout, stderr, (*todo.Service).StartTask)
 }
 
 func doneCommand(holder *serviceHolder, stdout, stderr io.Writer) *tcli.Command {
-	return verbCommand("done", "mark a task done", holder, stdout, stderr, func(svc *todo.Service) func(context.Context, int64) (todo.Task, error) {
-		return svc.CompleteTask
-	})
+	return verbCommand("done", "mark a task done", holder, stdout, stderr, (*todo.Service).CompleteTask)
 }
 
 func reopenCommand(holder *serviceHolder, stdout, stderr io.Writer) *tcli.Command {
-	return verbCommand("reopen", "reopen a done task", holder, stdout, stderr, func(svc *todo.Service) func(context.Context, int64) (todo.Task, error) {
-		return svc.ReopenTask
-	})
+	return verbCommand("reopen", "reopen a done task", holder, stdout, stderr, (*todo.Service).ReopenTask)
 }
 
 // verbCommand builds a single-argument lifecycle command (start/done/reopen).
-// selectVerb defers picking the Service method until the Action runs, since
-// holder.svc isn't populated until the root command's Before hook fires.
-func verbCommand(name, usage string, holder *serviceHolder, stdout, stderr io.Writer, selectVerb func(*todo.Service) func(context.Context, int64) (todo.Task, error)) *tcli.Command {
+// verb is a method expression (e.g. (*todo.Service).StartTask) rather than a
+// bound method value, since holder.svc isn't populated until the root
+// command's Before hook fires — well after this command tree is built.
+func verbCommand(name, usage string, holder *serviceHolder, stdout, stderr io.Writer, verb func(*todo.Service, context.Context, int64) (todo.Task, error)) *tcli.Command {
 	return &tcli.Command{
 		Name:      name,
 		Usage:     usage,
@@ -348,7 +343,7 @@ func verbCommand(name, usage string, holder *serviceHolder, stdout, stderr io.Wr
 			if err != nil {
 				return reportErr(stderr, err, 0)
 			}
-			t, err := selectVerb(holder.svc)(ctx, id)
+			t, err := verb(holder.svc, ctx, id)
 			if err != nil {
 				return reportErr(stderr, err, id)
 			}
