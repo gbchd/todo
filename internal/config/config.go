@@ -3,6 +3,7 @@
 package config
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -70,15 +71,9 @@ func LoadFrom(dir string) (Config, error) {
 	if _, err := toml.DecodeFile(path, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse %s: %w", path, err)
 	}
-	if cfg.TUILayout == "" {
-		cfg.TUILayout = DefaultTUILayout
-	}
-	if cfg.WebPort == 0 {
-		cfg.WebPort = DefaultWebPort
-	}
-	if cfg.DBPath == "" {
-		cfg.DBPath = filepath.Join(dir, dbName)
-	}
+	cfg.TUILayout = cmp.Or(cfg.TUILayout, DefaultTUILayout)
+	cfg.WebPort = cmp.Or(cfg.WebPort, DefaultWebPort)
+	cfg.DBPath = cmp.Or(cfg.DBPath, filepath.Join(dir, dbName))
 	return cfg, nil
 }
 

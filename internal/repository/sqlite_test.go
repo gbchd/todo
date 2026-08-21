@@ -89,7 +89,7 @@ func TestGet_NotFound(t *testing.T) {
 	require.ErrorIs(t, err, todo.ErrNotFound)
 }
 
-func TestUpdate(t *testing.T) {
+func TestUpdateWith(t *testing.T) {
 	repo := openTestRepo(t)
 	ctx := context.Background()
 	now := time.Now().Truncate(time.Second)
@@ -99,12 +99,13 @@ func TestUpdate(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now,
 	})
 
-	created.Title = "changed"
-	created.Status = todo.StatusDone
 	completedAt := now.Add(time.Hour)
-	created.CompletedAt = &completedAt
-
-	updated, err := repo.Update(ctx, created)
+	updated, err := repo.UpdateWith(ctx, created.ID, func(t todo.Task) (todo.Task, error) {
+		t.Title = "changed"
+		t.Status = todo.StatusDone
+		t.CompletedAt = &completedAt
+		return t, nil
+	})
 	require.NoError(t, err)
 	assert.Equal(t, "changed", updated.Title)
 	assert.Equal(t, todo.StatusDone, updated.Status)
@@ -112,9 +113,19 @@ func TestUpdate(t *testing.T) {
 	assert.True(t, updated.CompletedAt.Equal(completedAt), "CompletedAt = %v, want %v", updated.CompletedAt, completedAt)
 }
 
-func TestUpdate_NotFound(t *testing.T) {
+func TestUpdateWith_NotFound(t *testing.T) {
 	repo := openTestRepo(t)
-	_, err := repo.Update(context.Background(), todo.Task{ID: 999, Title: "x", CreatedAt: time.Now(), UpdatedAt: time.Now()})
+	_, err := repo.UpdateWith(context.Background(), 999, func(t todo.Task) (todo.Task, error) { return t, nil })
+	require.ErrorIs(t, err, todo.ErrNotFound)
+}
+
+// TestUpdateTask_NotFound exercises the unexported updateTask helper
+// directly, covering the ErrNotFound-on-missing-row path that UpdateWith
+// can no longer reach on its own (its own Get already fails first for a
+// nonexistent id).
+func TestUpdateTask_NotFound(t *testing.T) {
+	repo := openTestRepo(t)
+	_, err := updateTask(context.Background(), repo.db, todo.Task{ID: 999, Title: "x", CreatedAt: time.Now(), UpdatedAt: time.Now()})
 	require.ErrorIs(t, err, todo.ErrNotFound)
 }
 

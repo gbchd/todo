@@ -54,7 +54,9 @@ func (r *fakeRepository) withRollup(t Task) Task {
 	return t
 }
 
-func (r *fakeRepository) Update(_ context.Context, t Task) (Task, error) {
+// update is an unexported helper for UpdateWith — not part of the
+// TaskRepository port, since Service has no direct-update code path.
+func (r *fakeRepository) update(_ context.Context, t Task) (Task, error) {
 	if _, ok := r.tasks[t.ID]; !ok {
 		return Task{}, ErrNotFound
 	}
@@ -71,7 +73,7 @@ func (r *fakeRepository) UpdateWith(ctx context.Context, id int64, mutate func(T
 	if err != nil {
 		return Task{}, err
 	}
-	return r.Update(ctx, updated)
+	return r.update(ctx, updated)
 }
 
 // Delete mirrors the schema's ON DELETE CASCADE on tasks.parent_id.
