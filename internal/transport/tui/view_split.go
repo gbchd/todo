@@ -9,7 +9,7 @@ func (m model) viewSplit() string {
 	leftWidth := w * 2 / 5
 	rightWidth := w - leftWidth - 3
 
-	left := lipgloss.NewStyle().Width(leftWidth).Render(viewTaskList(m.tasks, m.cursor))
+	left := lipgloss.NewStyle().Width(leftWidth).Render(viewTaskList(m.tasks, indexOfID(m.tasks, m.selectedID)))
 
 	var right string
 	switch m.mode {
@@ -19,7 +19,7 @@ func (m model) viewSplit() string {
 		right = viewConfirm(m.pendingDeleteID)
 	default:
 		if t, ok := m.selectedTask(); ok {
-			right = viewDetailPane(t, m.detailChildren)
+			right = detailBody(t, m.detailChildren)
 		} else {
 			right = helpStyle.Render("No tasks")
 		}

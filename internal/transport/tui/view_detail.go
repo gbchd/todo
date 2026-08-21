@@ -37,8 +37,8 @@ func dueString(t todo.Task) string {
 }
 
 // detailBody renders the field-per-line task detail shared by the modal
-// (viewDetail) and the split layout's always-visible right pane
-// (viewDetailPane); only the wrapper around it differs.
+// (viewDetail) and the split layout's always-visible right pane; only the
+// wrapper around it differs.
 func detailBody(t todo.Task, children []todo.Task) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "#%d %s\n\n", t.ID, t.Title)
@@ -82,12 +82,6 @@ func viewDetail(t todo.Task, children []todo.Task, width int) string {
 	}
 	body := detailBody(t, children) + "\n" + helpStyle.Render(help)
 	return modalStyle.Width(width).Render(body)
-}
-
-// viewDetailPane renders the same information without the modal border,
-// for the split layout's always-visible right pane.
-func viewDetailPane(t todo.Task, children []todo.Task) string {
-	return detailBody(t, children)
 }
 
 func viewConfirm(id int64) string {

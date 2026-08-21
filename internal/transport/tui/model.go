@@ -5,9 +5,11 @@ package tui
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/gbchd/todo/internal/service/todo"
 	"github.com/gbchd/todo/internal/transport/statusverb"
@@ -54,9 +56,19 @@ type model struct {
 	layout layoutKind
 	mode   mode
 
-	tasks  []todo.Task
-	cursor int
-	column int // kanban only
+	tasks []todo.Task
+
+	// selectedID is the source of truth for what's selected — an identity,
+	// not a position. A reload or a status change can reorder or regroup
+	// tasks; deriving the render position from this id (selectedTask,
+	// kanbanColumn) instead of caching an index keeps the selection glued to
+	// the task even when its position moves.
+	selectedID int64
+
+	// focusColumn is the kanban column with input focus when selectedID
+	// names no task there — e.g. an empty column, or an empty board. It has
+	// no effect on list/split, where selection alone drives the cursor.
+	focusColumn int
 
 	// showSubtasks is a viewing mode, not a preference: it resets on every
 	// launch rather than being persisted to config.
@@ -80,19 +92,20 @@ func newModel(ctx context.Context, svc *todo.Service, layout layoutKind) model {
 
 func (m model) Init() tea.Cmd { return nil }
 
-// reload re-fetches tasks and, for list/split layouts, keeps the cursor on
-// the same task by id (the default sort reorders by status group, so a
-// status-changing action can otherwise move a fixed index onto a different
-// task). Kanban callers that move a card across columns fix up
-// column/cursor themselves afterward.
+// reload re-fetches tasks and keeps the selection on the same task by id (the
+// default sort reorders by status group, so a status-changing action can
+// otherwise move a fixed position onto a different task). If that task is
+// gone — deleted, or filtered out by the subtask toggle — it falls back to
+// whatever now sits nearest its old position, rather than jumping to the top.
 func (m *model) reload() {
-	var prevID int64
-	hadSelection := false
-	if m.layout != layoutKanban {
-		if t, ok := m.selectedTask(); ok {
-			prevID, hadSelection = t.ID, true
-		}
+	fallbackCol := m.kanbanColumn()
+	var fallbackIdx int
+	if m.layout == layoutKanban {
+		fallbackIdx = indexOfID(m.groupedByStatus()[fallbackCol], m.selectedID)
+	} else {
+		fallbackIdx = indexOfID(m.tasks, m.selectedID)
 	}
+	fallbackIdx = max(fallbackIdx, 0)
 
 	filter := todo.TaskFilter{}
 	if !m.showSubtasks {
@@ -106,25 +119,21 @@ func (m *model) reload() {
 	m.err = nil
 	m.tasks = tasks
 
-	m.cursor = clamp(m.cursor, m.visibleCount()-1)
-	if hadSelection {
-		for i, t := range m.tasks {
-			if t.ID == prevID {
-				m.cursor = i
-				break
-			}
-		}
+	if _, ok := m.selectedTask(); ok {
+		m.setSelection(m.selectedID) // id unchanged; still refresh detailChildren
+		return
 	}
-	m.loadDetailChildren()
+	if m.layout == layoutKanban {
+		m.focusColumn = fallbackCol
+		m.selectNearest(m.groupedByStatus()[fallbackCol], fallbackIdx)
+		return
+	}
+	m.selectNearest(m.tasks, fallbackIdx)
 }
 
 // loadDetailChildren refreshes the Subtask list the detail view shows. It uses
 // the same ParentID call path as `todo list --parent 4` rather than a dedicated
 // TaskWithChildren type.
-//
-// It has to follow the cursor, not just reload/enter: the split layout renders
-// the detail pane on every browse frame, so a stale list would show one task's
-// subtasks under another task's heading.
 func (m *model) loadDetailChildren() {
 	t, ok := m.selectedTask()
 	if !ok {
@@ -137,6 +146,27 @@ func (m *model) loadDetailChildren() {
 		return
 	}
 	m.detailChildren = children
+}
+
+// setSelection is the one place a selection change funnels through, so
+// detailChildren can never drift out of sync with what's selected — every
+// caller that changes selectedID goes through here (or selectNearest, which
+// calls it) instead of assigning the field directly.
+func (m *model) setSelection(id int64) {
+	m.selectedID = id
+	m.loadDetailChildren()
+}
+
+// selectNearest selects the task at idx in ts, clamped, or clears the
+// selection if ts is empty. It's the shared "land somewhere sensible"
+// fallback for a cursor move and for a reload whose previous selection
+// disappeared.
+func (m *model) selectNearest(ts []todo.Task, idx int) {
+	if len(ts) == 0 {
+		m.setSelection(0)
+		return
+	}
+	m.setSelection(ts[clamp(idx, len(ts)-1)].ID)
 }
 
 func (m model) size() (int, int) {
@@ -165,25 +195,22 @@ func (m model) groupedByStatus() [3][]todo.Task {
 	return cols
 }
 
-func (m model) visibleCount() int {
-	if m.layout == layoutKanban {
-		return len(m.groupedByStatus()[m.column])
-	}
-	return len(m.tasks)
-}
-
 func (m model) selectedTask() (todo.Task, bool) {
-	if m.layout == layoutKanban {
-		col := m.groupedByStatus()[m.column]
-		if m.cursor < 0 || m.cursor >= len(col) {
-			return todo.Task{}, false
-		}
-		return col[m.cursor], true
-	}
-	if m.cursor < 0 || m.cursor >= len(m.tasks) {
+	idx := indexOfID(m.tasks, m.selectedID)
+	if idx < 0 {
 		return todo.Task{}, false
 	}
-	return m.tasks[m.cursor], true
+	return m.tasks[idx], true
+}
+
+// kanbanColumn is the column the selection belongs to, derived from the
+// selected task's status. It falls back to focusColumn when nothing is
+// selected there, e.g. an empty column or an empty board.
+func (m model) kanbanColumn() int {
+	if t, ok := m.selectedTask(); ok {
+		return columnIndex(t.Status)
+	}
+	return m.focusColumn
 }
 
 func clamp(v, hi int) int {
@@ -199,21 +226,28 @@ func clamp(v, hi int) int {
 	return v
 }
 
-func (m *model) moveCursor(delta int) {
-	n := m.visibleCount()
-	if n == 0 {
-		m.cursor = 0
-		return
-	}
-	m.cursor = clamp(m.cursor+delta, n-1)
-	m.loadDetailChildren()
+// indexOfID returns id's position in tasks, or -1.
+func indexOfID(tasks []todo.Task, id int64) int {
+	return slices.IndexFunc(tasks, func(t todo.Task) bool { return t.ID == id })
 }
 
+func (m *model) moveCursor(delta int) {
+	ts := m.tasks
+	if m.layout == layoutKanban {
+		ts = m.groupedByStatus()[m.kanbanColumn()]
+	}
+	m.selectNearest(ts, max(indexOfID(ts, m.selectedID), 0)+delta)
+}
+
+// moveColumn changes which kanban column has focus (left/right), preserving
+// the selection's row position in the new column where possible. It does not
+// move a card — see moveCardColumn for that (H/L).
 func (m *model) moveColumn(delta int) {
-	m.column = clamp(m.column+delta, 2)
-	n := len(m.groupedByStatus()[m.column])
-	m.cursor = clamp(m.cursor, n-1)
-	m.loadDetailChildren()
+	col := m.kanbanColumn()
+	row := max(indexOfID(m.groupedByStatus()[col], m.selectedID), 0)
+	target := clamp(col+delta, 2)
+	m.focusColumn = target
+	m.selectNearest(m.groupedByStatus()[target], row)
 }
 
 func nextStatus(s todo.Status) todo.Status {
@@ -228,14 +262,15 @@ func nextStatus(s todo.Status) todo.Status {
 }
 
 func columnIndex(s todo.Status) int {
-	for i, cs := range columnStatuses {
-		if cs == s {
-			return i
-		}
+	if i := slices.Index(columnStatuses[:], s); i >= 0 {
+		return i
 	}
 	return 0
 }
 
+// advanceStatus cycles t to its next Status. reload() alone keeps the
+// selection on t: its id doesn't change, so once the reload sees t is still
+// present (just regrouped into its new column), selectedTask finds it again.
 func (m *model) advanceStatus(t todo.Task) {
 	next := nextStatus(t.Status)
 	if _, err := statusverb.Apply(m.ctx, m.svc, t.ID, next); err != nil {
@@ -243,20 +278,19 @@ func (m *model) advanceStatus(t todo.Task) {
 		return
 	}
 	m.reload()
-	if m.layout == layoutKanban {
-		m.column = columnIndex(next)
-		n := len(m.groupedByStatus()[m.column])
-		m.cursor = clamp(m.cursor, n-1)
-	}
 }
 
+// moveCardColumn moves the selected card to the adjacent kanban column
+// (H/L), changing its Status. Like advanceStatus, reload() alone keeps the
+// selection on the moved card.
 func (m *model) moveCardColumn(delta int) {
 	t, ok := m.selectedTask()
 	if !ok {
 		return
 	}
-	target := clamp(m.column+delta, 2)
-	if target == m.column {
+	col := m.kanbanColumn()
+	target := clamp(col+delta, 2)
+	if target == col {
 		return
 	}
 	if _, err := statusverb.Apply(m.ctx, m.svc, t.ID, columnStatuses[target]); err != nil {
@@ -264,9 +298,6 @@ func (m *model) moveCardColumn(delta int) {
 		return
 	}
 	m.reload()
-	m.column = target
-	n := len(m.groupedByStatus()[m.column])
-	m.cursor = clamp(m.cursor, n-1)
 }
 
 func (m model) View() string {
@@ -281,6 +312,27 @@ func (m model) View() string {
 	default:
 		return m.viewList()
 	}
+}
+
+// overlay renders whatever modal is active (form, detail, or delete
+// confirmation) on top of background, or returns background unchanged in
+// modeBrowse. Shared by the list and kanban layouts, whose full-screen modal
+// is identical; the split layout renders its detail pane inline instead, so
+// it doesn't use this.
+func (m model) overlay(background string) string {
+	w, h := m.size()
+	switch m.mode {
+	case modeForm:
+		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, m.form.view(min(w-4, 60)))
+	case modeDetail:
+		if t, ok := m.selectedTask(); ok {
+			return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, viewDetail(t, m.detailChildren, min(w-4, 60)))
+		}
+	case modeConfirmDelete:
+		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, viewConfirm(m.pendingDeleteID))
+	case modeBrowse:
+	}
+	return background
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -335,7 +387,6 @@ func (m model) handleBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if _, ok := m.selectedTask(); ok {
 			m.mode = modeDetail
-			m.loadDetailChildren()
 		}
 	case "s":
 		m.showSubtasks = !m.showSubtasks
