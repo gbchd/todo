@@ -192,6 +192,12 @@ func validSortKey(k SortKey) bool {
 // Subtask; setting it to nil promotes it back to top level. Setting Status
 // applies the same lifecycle rules as the explicit Start/Complete/Reopen
 // verbs (see applyStatus).
+//
+// A patch carrying ExpectedVersion applies only if the stored version still
+// matches. The comparison runs inside the UpdateWith transaction, against the
+// row that transaction loaded, so nothing can commit between the check and the
+// write; a mismatch aborts the transaction with a *ConflictError and leaves the
+// task untouched.
 func (s *Service) UpdateTask(ctx context.Context, id int64, patch TaskPatch) (Task, error) {
 	if patch.ParentID.IsSet() {
 		if err := s.validateParent(ctx, id, patch.ParentID.Value()); err != nil {
@@ -205,6 +211,16 @@ func (s *Service) UpdateTask(ctx context.Context, id int64, patch TaskPatch) (Ta
 	}
 	return s.repo.UpdateWith(ctx, id, func(existing Task) (Task, error) {
 		now := s.now()
+		// The precondition is checked here, not before UpdateWith, so that the
+		// version it compares is the one the enclosing transaction read. It
+		// deliberately does not set changed: a precondition is not an edit.
+		if patch.ExpectedVersion.IsSet() && patch.ExpectedVersion.Value() != existing.Version {
+			return Task{}, &ConflictError{
+				TaskID:   existing.ID,
+				Expected: patch.ExpectedVersion.Value(),
+				Actual:   existing.Version,
+			}
+		}
 		changed := false
 		if patch.Title.IsSet() {
 			title := patch.Title.Value()

@@ -31,7 +31,7 @@ func TestOpen_Migrates(t *testing.T) {
 	repo := openTestRepo(t)
 	var version int
 	require.NoError(t, repo.db.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version))
-	assert.Equal(t, 2, version, "user_version must match the highest embedded migration")
+	assert.Equal(t, 3, version, "user_version must match the highest embedded migration")
 }
 
 func TestOpen_ReopenIsIdempotent(t *testing.T) {

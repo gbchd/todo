@@ -1,11 +1,11 @@
 # Personal Todo App
 
-A single-user, single-machine task tracker: one shared domain model for a Task and its lifecycle, consumed identically by three interchangeable interfaces (CLI, TUI, web).
+A single-user, multi-device task tracker: one shared domain model for a Task and its lifecycle, consumed identically by three interchangeable interfaces (CLI, TUI, web).
 
 ## Language
 
 **Task**
-A single actionable to-do item — the only kind of entity in this domain. Identified by a permanent, auto-incrementing id that is never reused or renumbered after deletion. A Task may have a parent, or may have Subtasks of its own, but never both.
+A single actionable to-do item — the only kind of entity in this domain. Identified by an auto-incrementing id that is permanent within a store — never reused or renumbered after deletion — but means nothing outside the store that issued it. A Task may have a parent, or may have Subtasks of its own, but never both.
 _Avoid_: Item, todo, entry
 
 **Subtask**
