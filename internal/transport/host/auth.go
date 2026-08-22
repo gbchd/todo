@@ -60,7 +60,13 @@ const bearerPrefix = "Bearer "
 // It wraps only the task API. A route registered outside that subtree — the
 // pairing route, which by definition serves a device that has no credential
 // yet — never reaches this.
+//
+// The credential an unregistered id is checked against is minted here, while
+// the handler is being assembled, and never on the first request that misses
+// one: see credential.Absent for why paying for it later would be its own
+// oracle.
 func Authenticate(src credential.Source) Middleware {
+	absent := credential.Absent()
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token, ok := strings.CutPrefix(r.Header.Get("Authorization"), bearerPrefix)
@@ -68,7 +74,7 @@ func Authenticate(src credential.Source) Middleware {
 				denied(w, "this request carried no device credential; pair this machine with the host before using it")
 				return
 			}
-			if !verify(src, token) {
+			if !verify(src, absent, token) {
 				denied(w, "this host rejected the device credential; it may have been revoked — pair this machine with the host again")
 				return
 			}
@@ -77,7 +83,8 @@ func Authenticate(src credential.Source) Middleware {
 	}
 }
 
-// verify checks a token against the one credential it names.
+// verify checks a token against the one credential it names, falling back to
+// absent — the credential nothing satisfies — when it names none.
 //
 // The two failing paths deliberately converge: an id nobody is registered
 // under still runs a full hash verification, against a hash nothing satisfies,
@@ -85,14 +92,14 @@ func Authenticate(src credential.Source) Middleware {
 // wrong secret. Returning early on the lookup miss would leave the host
 // answering "is this device id registered?" in the time it takes to reply,
 // which is a question no unauthenticated caller may ask.
-func verify(src credential.Source, token string) bool {
+func verify(src credential.Source, absent credential.Credential, token string) bool {
 	id, secret, ok := credential.SplitToken(token)
 	if !ok {
 		return false
 	}
 	cred, registered := src(id)
 	if !registered {
-		return credential.VerifyAbsent(secret)
+		return absent.Verify(secret)
 	}
 	return cred.Verify(secret)
 }

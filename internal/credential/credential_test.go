@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestIssue_TokenVerifiesAgainstItsCredential(t *testing.T) {
@@ -53,13 +54,28 @@ func TestVerify_RejectsTheWrongSecret(t *testing.T) {
 
 // An unknown id runs a full verification against a hash nothing satisfies, so
 // that "no such device" is not the answer the host reaches soonest.
-func TestVerifyAbsent_AlwaysFails(t *testing.T) {
+func TestAbsent_AlwaysFails(t *testing.T) {
 	_, token, err := Issue()
 	require.NoError(t, err)
 	_, secret, _ := SplitToken(token)
 
-	assert.False(t, VerifyAbsent(secret), "a real secret must not open a credential nobody holds")
-	assert.False(t, VerifyAbsent(""))
+	absent := Absent()
+	assert.False(t, absent.Verify(secret), "a real secret must not open a credential nobody holds")
+	assert.False(t, absent.Verify(""))
+}
+
+// Absent hands back a finished hash, so a caller that builds one while
+// assembling its handler has nothing left to pay when the first unknown id
+// arrives. A per-installation hash also means one host's absent credential
+// says nothing about another's.
+func TestAbsent_IsAFinishedHashAndDifferentEveryTime(t *testing.T) {
+	first, second := Absent(), Absent()
+
+	require.NotEmpty(t, first.SecretHash, "the hash must be complete before the credential is returned")
+	cost, err := bcrypt.Cost([]byte(first.SecretHash))
+	require.NoError(t, err, "the hash must be a real bcrypt hash")
+	assert.Equal(t, DefaultCost, cost, "an unknown id must cost what a known one costs")
+	assert.NotEqual(t, first.SecretHash, second.SecretHash, "no two installations may share it")
 }
 
 func TestSplitToken(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -99,6 +100,40 @@ func TestAuth_GuardsEveryTaskRoute(t *testing.T) {
 			assert.Equal(t, http.StatusUnauthorized, rec.Code)
 		})
 	}
+}
+
+// The time a rejection takes must not give the difference away either, and
+// that includes the first unknown id a freshly started host ever sees.
+// Authenticate mints the credential a lookup miss is checked against while the
+// handler is being assembled, so no request pays for it; minting it on the
+// first miss instead would make that request cost two password hashes where a
+// known id costs one.
+func TestAuth_TheFirstUnknownIDCostsWhatAKnownOneCosts(t *testing.T) {
+	cred, _ := issue(t)
+	mux := newGuardedMux(t, registered(cred))
+
+	// Deliberately the very first request this mux serves.
+	firstUnknown := timeRejection(t, mux, "nosuchdevice.wrong")
+
+	known := firstUnknown
+	for range 3 {
+		known = min(known, timeRejection(t, mux, cred.ID+".wrong"))
+	}
+
+	assert.Less(t, firstUnknown, known*3/2,
+		"the first unknown id took %s against %s for a known one, which is a readable answer to \"is this device registered?\"",
+		firstUnknown, known)
+}
+
+// timeRejection measures one rejected request end to end, which is one
+// password hash plus noise nothing here is sensitive to.
+func timeRejection(t *testing.T, mux http.Handler, token string) time.Duration {
+	t.Helper()
+	start := time.Now()
+	rec := request(mux, http.MethodGet, apiPrefix+"/tasks", authed(token))
+	elapsed := time.Since(start)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	return elapsed
 }
 
 // An unknown id and a wrong secret must be one answer, not two: the difference

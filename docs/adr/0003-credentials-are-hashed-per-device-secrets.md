@@ -31,12 +31,20 @@ who cared to ask. So an unknown id runs the *same* verification, at the same
 work factor, against the hash of a secret that was generated, hashed, and
 discarded unread. Both paths run one bcrypt comparison and both reach the same
 401 with the same message. The dummy hash is generated per process rather than
-written into the source, so no two installations share it, and it is computed
-lazily so a host that never sees an unknown id never pays for it.
+written into the source, so no two installations share it.
 
-`credential.VerifyAbsent` exists only to make that equivalence something the
-code states rather than something a reader has to verify by inspection. It is
-the same function, on the same type, at the same cost.
+It is generated *eagerly*, when `Authenticate` assembles the handler, and this
+is not an optimisation. Computing it on the first miss would move the cost of
+the dummy hash onto exactly one request — the first unknown id a freshly
+started host sees — making that request twice the price of a known one and
+handing back the same "is this id registered?" answer the dummy hash exists to
+withhold. The work has to be done before any request can observe it, so it is
+done while there is nothing to observe it.
+
+`credential.Absent` exists only to make that equivalence something the code
+states rather than something a reader has to verify by inspection: the
+credential a miss falls back to is an ordinary `Credential`, checked with the
+same `Verify`, on the same type, at the same cost.
 
 ## bcrypt, at the library default cost
 
