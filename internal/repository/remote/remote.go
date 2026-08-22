@@ -107,24 +107,19 @@ func New(baseURL, token string, opts ...Option) *Repository {
 // and it only happens when the network drops the reply to a write that
 // succeeded.
 //
-// The create endpoint takes only the fields a caller may choose, so a task
-// handed in already in a non-open state — which the Service never does, but a
-// repository's caller may — takes a second request to put it there. That is
-// also what stamps its CompletedAt, on the host's clock, like every other
-// timestamp.
+// Being un-retryable is also why it is one request. The status a task is
+// handed in with goes out in the create body, so a task that is already done —
+// which the Service never asks for, but a caller of the port may — is created
+// done rather than created and then patched. A second write after a write that
+// cannot be retried is how a caller ends up with an error for a task that
+// exists. The host stamps its CompletedAt from the status, on the host's
+// clock, like every other timestamp.
 func (r *Repository) Create(ctx context.Context, t todo.Task) (todo.Task, error) {
 	var dto taskDTO
 	if err := r.do(ctx, http.MethodPost, apiPrefix+"/tasks", nil, toCreateBody(t), http.StatusCreated, &dto); err != nil {
 		return todo.Task{}, err
 	}
-	created, err := dto.toTask()
-	if err != nil {
-		return todo.Task{}, err
-	}
-	if t.Status == "" || t.Status == created.Status {
-		return created, nil
-	}
-	return r.patch(ctx, created.ID, map[string]any{"status": string(t.Status)})
+	return dto.toTask()
 }
 
 // Get returns one task, or an error satisfying errors.Is(err, todo.ErrNotFound).

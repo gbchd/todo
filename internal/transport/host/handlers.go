@@ -186,6 +186,16 @@ func parseDateParam(q url.Values, key string) (*time.Time, error) {
 	return &d, nil
 }
 
+// createTask creates the task in the state the request asked for, in one
+// request, because the client's repository adapter must not have to follow a
+// create it cannot retry with a second write that can fail on its own.
+//
+// It still goes through the Service twice — AddTask, then UpdateTask for a
+// status other than the one a task opens in — because the host has no other
+// way in and the lifecycle rules that stamp CompletedAt live there. Two calls
+// are safe here where two HTTP requests are not: nothing is written to the
+// response between them, so the client sees either the created task or an
+// error, never a task it was told did not exist.
 func createTask(svc *todo.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req createRequest
@@ -214,8 +224,32 @@ func createTask(svc *todo.Service) http.HandlerFunc {
 			writeError(w, err)
 			return
 		}
+		if t, err = openIn(r, svc, t, todo.Status(req.Status)); err != nil {
+			writeError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusCreated, toDTO(t))
 	}
+}
+
+// openIn moves a freshly created task to the status the request asked for,
+// and is a no-op for the status the Service already opened it in.
+//
+// A rejected status undoes the create rather than leaving a task nobody asked
+// for behind: the request answers with an error, so the task it half-made must
+// not survive it. The delete cannot be observed as a separate step — no reply
+// has been written yet — which is exactly what makes this compensation sound
+// here and unsound across a network.
+func openIn(r *http.Request, svc *todo.Service, t todo.Task, status todo.Status) (todo.Task, error) {
+	if status == "" || status == t.Status {
+		return t, nil
+	}
+	updated, err := svc.UpdateTask(r.Context(), t.ID, todo.TaskPatch{Status: todo.Set(status)})
+	if err != nil {
+		svc.DeleteTask(r.Context(), t.ID) //nolint:errcheck // the request is failing either way; a stranded task is the worse of the two
+		return todo.Task{}, err
+	}
+	return updated, nil
 }
 
 func getTask(svc *todo.Service) http.HandlerFunc {

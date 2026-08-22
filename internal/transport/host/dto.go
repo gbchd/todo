@@ -73,9 +73,18 @@ func toDTOs(tasks []todo.Task) []taskDTO {
 // createRequest is the POST /api/v1/tasks body: a deliberately narrower struct
 // than taskDTO, so the fields storage owns have nowhere to arrive. A non-null
 // parent_id creates the task as a Subtask of that task.
+//
+// Status is the one field here that a caller almost never sets — the Service
+// opens every task it adds — and it is accepted anyway so that a client whose
+// repository is asked to store an already-done task can say so in the request
+// that creates it. Without it the client would have to create the task and
+// then patch it, and a create it cannot safely retry followed by a second
+// write that can fail is a task the caller is told it did not create and did.
+// An empty status means "whatever the Service opens a task in".
 type createRequest struct {
 	Title       string  `json:"title"`
 	Description string  `json:"description"`
+	Status      string  `json:"status"`
 	Priority    string  `json:"priority"`
 	DueDate     *string `json:"due_date"`
 	ParentID    *int64  `json:"parent_id"`

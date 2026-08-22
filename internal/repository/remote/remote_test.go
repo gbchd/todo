@@ -333,18 +333,27 @@ func TestHostValidationErrorSurvivesTheWire(t *testing.T) {
 	}
 }
 
-// TestCreate_StoresANonOpenStatus covers what the create endpoint has no room
-// for. The Service never creates anything but an open task, but the port makes
-// no such promise, and a repository that quietly dropped the status would
-// break the contract suite's fixtures — and any future caller.
-func TestCreate_StoresANonOpenStatus(t *testing.T) {
-	repo, _ := newHostedRepo(t)
+// TestCreate_StoresANonOpenStatusInOneWrite pins both halves of what the
+// create body carries. The Service never creates anything but an open task,
+// but the port makes no such promise, and a repository that quietly dropped
+// the status would break the contract suite's fixtures — and any future
+// caller. It must also do it in the one request it is allowed: Create is never
+// retried, so a second write behind it is a write whose failure would report a
+// task that does exist as a task that was not created.
+func TestCreate_StoresANonOpenStatusInOneWrite(t *testing.T) {
+	posts := &interference{method: http.MethodPost}
+	patches := &interference{method: http.MethodPatch}
+	repo, _ := newHostedRepo(t, posts.middleware, patches.middleware)
+
 	created, err := repo.Create(t.Context(), todo.Task{
 		Title: "already finished", Status: todo.StatusDone, Priority: todo.PriorityNone,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, todo.StatusDone, created.Status)
 	assert.NotNil(t, created.CompletedAt, "the host stamps the completion time it derives")
+
+	assert.Equal(t, int64(1), posts.seen.Load(), "Create is one request")
+	assert.Zero(t, patches.seen.Load(), "the status must not be compensated for with a second write")
 
 	got, err := repo.Get(t.Context(), created.ID)
 	require.NoError(t, err)
