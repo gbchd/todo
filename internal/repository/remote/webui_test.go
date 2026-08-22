@@ -27,7 +27,7 @@ func TestWebUI_OverARemoteBackend(t *testing.T) {
 
 	call := func(method, target, body string) *httptest.ResponseRecorder {
 		t.Helper()
-		req := httptest.NewRequest(method, target, strings.NewReader(body))
+		req := httptest.NewRequestWithContext(t.Context(), method, target, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
@@ -79,7 +79,7 @@ func TestWebUI_SurfacesAnUnreachableHost(t *testing.T) {
 
 	mux := web.NewMux(todo.NewService(New(url, "id.secret")))
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tasks", nil))
+	mux.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/tasks", nil))
 
 	assert.GreaterOrEqual(t, rec.Code, 500, "an unreachable host is not an empty task list")
 	assert.NotEqual(t, "[]\n", rec.Body.String())
