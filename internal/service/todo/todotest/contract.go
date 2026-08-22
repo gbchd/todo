@@ -95,9 +95,19 @@ var taskRepositoryContract = []contractCase{
 		assert.Equal(t, in.Priority, got.Priority)
 		require.NotNil(t, got.DueDate)
 		assert.True(t, got.DueDate.Equal(due), "DueDate = %v, want %v", got.DueDate, due)
-		assert.True(t, got.CreatedAt.Equal(fixtureNow), "CreatedAt = %v, want %v", got.CreatedAt, fixtureNow)
-		assert.True(t, got.UpdatedAt.Equal(fixtureNow), "UpdatedAt = %v, want %v", got.UpdatedAt, fixtureNow)
 		assert.Nil(t, got.CompletedAt)
+
+		// Timestamps are storage's, not the caller's — see TaskRepository's
+		// documentation. The SQLite adapter keeps the ones it was handed; the
+		// HTTP adapter is talking to a host whose clock is authoritative and
+		// re-stamps them. What every implementation owes is a stamped value
+		// that a re-read returns unchanged. That SQLite specifically preserves
+		// the caller's own is asserted where it is promised, in sqlite_test.go.
+		assert.False(t, got.CreatedAt.IsZero(), "Create must stamp a creation time")
+		assert.True(t, got.CreatedAt.Equal(created.CreatedAt),
+			"a re-read must return the CreatedAt the write returned (%v, then %v)", created.CreatedAt, got.CreatedAt)
+		assert.True(t, got.UpdatedAt.Equal(created.UpdatedAt),
+			"a re-read must return the UpdatedAt the write returned (%v, then %v)", created.UpdatedAt, got.UpdatedAt)
 	}},
 
 	{"get reports a missing task as ErrNotFound", func(t *testing.T, repo todo.TaskRepository) {
@@ -118,8 +128,10 @@ var taskRepositoryContract = []contractCase{
 		require.NoError(t, err)
 		assert.Equal(t, "changed", updated.Title)
 		assert.Equal(t, todo.StatusDone, updated.Status)
-		require.NotNil(t, updated.CompletedAt)
-		assert.True(t, updated.CompletedAt.Equal(completedAt), "CompletedAt = %v, want %v", updated.CompletedAt, completedAt)
+		// The completion time itself is storage's, like every other timestamp:
+		// what the port promises is that a task finished by the mutation comes
+		// back carrying one.
+		assert.NotNil(t, updated.CompletedAt, "a task the mutation finished must come back with a completion time")
 
 		got, err := repo.Get(t.Context(), created.ID)
 		require.NoError(t, err, "re-read after update")
