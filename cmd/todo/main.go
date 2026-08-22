@@ -12,6 +12,7 @@ import (
 
 	"github.com/gbchd/todo/internal/config"
 	"github.com/gbchd/todo/internal/transport/cli"
+	"github.com/gbchd/todo/internal/transport/host"
 	"github.com/gbchd/todo/internal/transport/tui"
 	"github.com/gbchd/todo/internal/transport/web"
 )
@@ -30,5 +31,5 @@ func run() int {
 		return 1
 	}
 
-	return cli.Run(ctx, os.Args, os.Stdin, os.Stdout, os.Stderr, cfg, tui.Run, web.Run)
+	return cli.Run(ctx, os.Args, os.Stdin, os.Stdout, os.Stderr, cfg, tui.Run, web.Run, host.Run)
 }

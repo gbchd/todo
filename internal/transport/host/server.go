@@ -1,0 +1,46 @@
+package host
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	"github.com/gbchd/todo/internal/service/todo"
+)
+
+// Run starts the host bound to addr and blocks until ctx is canceled or the
+// server fails.
+//
+// Whether addr is safe to bind is settled before this is called: see
+// config.HostConfig.Validate, which refuses a non-loopback address while no
+// device credentials are registered. Run is given an address it may listen on.
+func Run(ctx context.Context, svc *todo.Service, addr string, stdout io.Writer) error {
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           NewMux(svc),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.ListenAndServe() }()
+
+	fmt.Fprintf(stdout, "Hosting the task API on http://%s%s\n", addr, apiPrefix)
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return server.Shutdown(shutdownCtx) //nolint:contextcheck // context is used for timeout, not cancellation
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
+}

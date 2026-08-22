@@ -84,9 +84,9 @@ func TestDelete_PromptNamesSubtaskCount(t *testing.T) {
 	runCLI(t, dbPath, "add", "second child", "--parent", "1")
 
 	var outBuf, errBuf bytes.Buffer
-	tui, serve := noopLaunchers()
+	tui, serve, host := noopLaunchers()
 	code := Run(context.Background(), []string{"todo", "--db", dbPath, "delete", "1"},
-		strings.NewReader("y\n"), &outBuf, &errBuf, config.Config{}, tui, serve)
+		strings.NewReader("y\n"), &outBuf, &errBuf, config.Config{}, tui, serve, host)
 	require.Equal(t, 0, code, "stderr=%q", errBuf.String())
 	assert.Contains(t, outBuf.String(), `Delete task #1 "parent" and its 2 subtasks? [y/N]`)
 
@@ -101,8 +101,8 @@ func TestDelete_PromptUnchangedWithoutSubtasks(t *testing.T) {
 	runCLI(t, dbPath, "add", "lonely")
 
 	var outBuf, errBuf bytes.Buffer
-	tui, serve := noopLaunchers()
+	tui, serve, host := noopLaunchers()
 	Run(context.Background(), []string{"todo", "--db", dbPath, "delete", "1"},
-		strings.NewReader("n\n"), &outBuf, &errBuf, config.Config{}, tui, serve)
+		strings.NewReader("n\n"), &outBuf, &errBuf, config.Config{}, tui, serve, host)
 	assert.Contains(t, outBuf.String(), `Delete task #1 "lonely"? [y/N]`)
 }
