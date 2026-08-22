@@ -1,7 +1,6 @@
 package host
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -35,7 +34,7 @@ func pairingMux(t *testing.T) (http.Handler, *pairing.Store) {
 
 func postPair(t *testing.T, mux http.Handler, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, pairing.Path, strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, pairing.Path, strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	return rec
@@ -78,7 +77,7 @@ func TestPair_IsIndistinguishableFromANonexistentRoute(t *testing.T) {
 
 	absent := httptest.NewRecorder()
 	mux.ServeHTTP(absent, httptest.NewRequestWithContext(
-		context.Background(), http.MethodPost, "/no-such-route", strings.NewReader("")))
+		t.Context(), http.MethodPost, "/no-such-route", strings.NewReader("")))
 	require.Equal(t, http.StatusNotFound, absent.Code, "the baseline must be a genuine 404")
 
 	openOffer(t, store)
@@ -111,7 +110,7 @@ func TestPair_IsIndistinguishableFromANonexistentRoute(t *testing.T) {
 		// announces that the route is real.
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequestWithContext(
-			context.Background(), http.MethodGet, pairing.Path, nil))
+			t.Context(), http.MethodGet, pairing.Path, nil))
 		assertSameResponse(t, absent, rec)
 	})
 }

@@ -1,7 +1,6 @@
 package host
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -45,8 +44,9 @@ func newGuardedMux(t *testing.T, src credential.Source) http.Handler {
 
 // request drives the guarded mux with whatever headers a test wants to set,
 // including none.
-func request(mux http.Handler, method, path string, headers map[string]string) *httptest.ResponseRecorder {
-	req := httptest.NewRequestWithContext(context.Background(), method, path, nil)
+func request(t *testing.T, mux http.Handler, method, path string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), method, path, nil)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -67,7 +67,7 @@ func TestAuth_AcceptsARegisteredDevice(t *testing.T) {
 	cred, token := issue(t)
 	mux := newGuardedMux(t, registered(cred))
 
-	rec := request(mux, http.MethodGet, apiPrefix+"/tasks", authed(token))
+	rec := request(t, mux, http.MethodGet, apiPrefix+"/tasks", authed(token))
 	assert.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
 }
 
@@ -76,7 +76,7 @@ func TestAuth_RejectsARequestWithNoCredential(t *testing.T) {
 	cred, _ := issue(t)
 	mux := newGuardedMux(t, registered(cred))
 
-	rec := request(mux, http.MethodGet, apiPrefix+"/tasks", map[string]string{ProtocolVersionHeader: ProtocolVersion})
+	rec := request(t, mux, http.MethodGet, apiPrefix+"/tasks", map[string]string{ProtocolVersionHeader: ProtocolVersion})
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.Equal(t, "Bearer", rec.Header().Get("WWW-Authenticate"))
 	assert.Contains(t, decodeError(t, rec).Error, "no device credential")
@@ -96,7 +96,7 @@ func TestAuth_GuardsEveryTaskRoute(t *testing.T) {
 	}
 	for _, r := range routes {
 		t.Run(r.method+" "+r.path, func(t *testing.T) {
-			rec := request(mux, r.method, r.path, map[string]string{ProtocolVersionHeader: ProtocolVersion})
+			rec := request(t, mux, r.method, r.path, map[string]string{ProtocolVersionHeader: ProtocolVersion})
 			assert.Equal(t, http.StatusUnauthorized, rec.Code)
 		})
 	}
@@ -130,7 +130,7 @@ func TestAuth_TheFirstUnknownIDCostsWhatAKnownOneCosts(t *testing.T) {
 func timeRejection(t *testing.T, mux http.Handler, token string) time.Duration {
 	t.Helper()
 	start := time.Now()
-	rec := request(mux, http.MethodGet, apiPrefix+"/tasks", authed(token))
+	rec := request(t, mux, http.MethodGet, apiPrefix+"/tasks", authed(token))
 	elapsed := time.Since(start)
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
 	return elapsed
@@ -158,7 +158,7 @@ func TestAuth_RejectsBadCredentialsIdentically(t *testing.T) {
 	var bodies []string
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := request(mux, http.MethodGet, apiPrefix+"/tasks", authed(tc.token))
+			rec := request(t, mux, http.MethodGet, apiPrefix+"/tasks", authed(tc.token))
 			require.Equal(t, http.StatusUnauthorized, rec.Code)
 			bodies = append(bodies, decodeError(t, rec).Error)
 		})
@@ -169,7 +169,7 @@ func TestAuth_RejectsBadCredentialsIdentically(t *testing.T) {
 
 	// And the token that does work still works, so the rejections above are
 	// about the credentials and not about the host.
-	rec := request(mux, http.MethodGet, apiPrefix+"/tasks", authed(token))
+	rec := request(t, mux, http.MethodGet, apiPrefix+"/tasks", authed(token))
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
@@ -177,7 +177,7 @@ func TestAuth_RejectsANonBearerScheme(t *testing.T) {
 	cred, token := issue(t)
 	mux := newGuardedMux(t, registered(cred))
 
-	rec := request(mux, http.MethodGet, apiPrefix+"/tasks", map[string]string{
+	rec := request(t, mux, http.MethodGet, apiPrefix+"/tasks", map[string]string{
 		"Authorization":       "Basic " + token,
 		ProtocolVersionHeader: ProtocolVersion,
 	})
@@ -195,16 +195,16 @@ func TestAuth_RevokingOneDeviceLeavesTheOthersWorking(t *testing.T) {
 		return registered(devices...)(id)
 	})
 
-	require.Equal(t, http.StatusOK, request(mux, http.MethodGet, apiPrefix+"/tasks", authed(laptopToken)).Code)
-	require.Equal(t, http.StatusOK, request(mux, http.MethodGet, apiPrefix+"/tasks", authed(desktopToken)).Code)
+	require.Equal(t, http.StatusOK, request(t, mux, http.MethodGet, apiPrefix+"/tasks", authed(laptopToken)).Code)
+	require.Equal(t, http.StatusOK, request(t, mux, http.MethodGet, apiPrefix+"/tasks", authed(desktopToken)).Code)
 
 	devices = []credential.Credential{desktop}
 
 	assert.Equal(t, http.StatusUnauthorized,
-		request(mux, http.MethodGet, apiPrefix+"/tasks", authed(laptopToken)).Code,
+		request(t, mux, http.MethodGet, apiPrefix+"/tasks", authed(laptopToken)).Code,
 		"the revoked device must be rejected on its very next request")
 	assert.Equal(t, http.StatusOK,
-		request(mux, http.MethodGet, apiPrefix+"/tasks", authed(desktopToken)).Code,
+		request(t, mux, http.MethodGet, apiPrefix+"/tasks", authed(desktopToken)).Code,
 		"every other device keeps working")
 }
 
@@ -215,14 +215,14 @@ func TestAuth_FailsClosedWhenNoDeviceIsRegistered(t *testing.T) {
 	_, token := issue(t)
 	mux := newGuardedMux(t, registered())
 
-	assert.Equal(t, http.StatusUnauthorized, request(mux, http.MethodGet, apiPrefix+"/tasks", authed(token)).Code)
+	assert.Equal(t, http.StatusUnauthorized, request(t, mux, http.MethodGet, apiPrefix+"/tasks", authed(token)).Code)
 }
 
 func TestProtocolVersion_RejectsAMissingVersion(t *testing.T) {
 	cred, token := issue(t)
 	mux := newGuardedMux(t, registered(cred))
 
-	rec := request(mux, http.MethodGet, apiPrefix+"/tasks", map[string]string{"Authorization": "Bearer " + token})
+	rec := request(t, mux, http.MethodGet, apiPrefix+"/tasks", map[string]string{"Authorization": "Bearer " + token})
 	require.Equal(t, http.StatusBadRequest, rec.Code, "a missing version is not a missing route")
 	assert.NotEqual(t, http.StatusNotFound, rec.Code)
 	assert.Contains(t, decodeError(t, rec).Error, "upgrade todo")
@@ -234,7 +234,7 @@ func TestProtocolVersion_RejectsAnUnrecognisedVersion(t *testing.T) {
 
 	headers := authed(token)
 	headers[ProtocolVersionHeader] = "99"
-	rec := request(mux, http.MethodGet, apiPrefix+"/tasks", headers)
+	rec := request(t, mux, http.MethodGet, apiPrefix+"/tasks", headers)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	body := decodeError(t, rec).Error
@@ -250,7 +250,7 @@ func TestProtocolVersion_IsCheckedBeforeTheCredential(t *testing.T) {
 	cred, _ := issue(t)
 	mux := newGuardedMux(t, registered(cred))
 
-	rec := request(mux, http.MethodGet, apiPrefix+"/tasks", map[string]string{ProtocolVersionHeader: "99"})
+	rec := request(t, mux, http.MethodGet, apiPrefix+"/tasks", map[string]string{ProtocolVersionHeader: "99"})
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, decodeError(t, rec).Error, "upgrade todo")
 }
@@ -263,7 +263,7 @@ func TestGuardedMux_StillMapsDomainErrorsOntoDistinctStatusCodes(t *testing.T) {
 	mux := NewMux(svc, nil, RequireProtocolVersion, Authenticate(registered(cred)))
 
 	do := func(method, path string, body string) *httptest.ResponseRecorder {
-		req := httptest.NewRequestWithContext(context.Background(), method, path, strings.NewReader(body))
+		req := httptest.NewRequestWithContext(t.Context(), method, path, strings.NewReader(body))
 		for k, v := range authed(token) {
 			req.Header.Set(k, v)
 		}

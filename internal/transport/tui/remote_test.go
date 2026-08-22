@@ -27,7 +27,7 @@ func newRemoteModel(t *testing.T, layout layoutKind) (model, *todo.Service) {
 	h := hosttest.StartFresh(t)
 	svc := todo.NewService(remote.New(h.URL, h.Token))
 
-	ctx := context.Background()
+	ctx := t.Context()
 	parent, err := svc.AddTask(ctx, todo.NewTask{Title: "first task", Priority: todo.PriorityHigh})
 	require.NoError(t, err, "seed")
 	_, err = svc.AddTask(ctx, todo.NewTask{Title: "second task"})
@@ -55,14 +55,14 @@ func TestModel_OverARemoteBackend(t *testing.T) {
 	started, _ := m.selectedTask()
 	assert.Equal(t, todo.StatusInProgress, started.Status, "status after one advance")
 
-	stored, err := svc.GetTask(context.Background(), first.ID)
+	stored, err := svc.GetTask(t.Context(), first.ID)
 	require.NoError(t, err)
 	assert.Equal(t, todo.StatusInProgress, stored.Status, "the advance must have reached the host")
 
 	m = send(t, m, "d", "y")
 	assert.Len(t, m.tasks, 1, "after a confirmed delete")
 
-	remaining, err := svc.ListTasks(context.Background(), todo.TaskFilter{})
+	remaining, err := svc.ListTasks(t.Context(), todo.TaskFilter{})
 	require.NoError(t, err)
 	assert.Len(t, remaining, 1, "the delete must have cascaded on the host, not just in the view")
 }
@@ -140,7 +140,7 @@ func newDroppableModel(t *testing.T) (model, *droppable) {
 	repo := &droppable{TaskRepository: remote.New(h.URL, h.Token), url: h.URL}
 	svc := todo.NewService(repo)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err := svc.AddTask(ctx, todo.NewTask{Title: "first task", Priority: todo.PriorityHigh})
 	require.NoError(t, err, "seed")
 	_, err = svc.AddTask(ctx, todo.NewTask{Title: "second task"})
@@ -159,7 +159,7 @@ func TestRun_RefusesToStartWhenTheHostIsUnreachable(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(context.Background(), todo.NewService(remote.New(url, "id.secret")),
+		done <- Run(t.Context(), todo.NewService(remote.New(url, "id.secret")),
 			"list", strings.NewReader(""), io.Discard)
 	}()
 

@@ -51,7 +51,7 @@ func runAtHome(t *testing.T, home string, args ...string) (stdout, stderr string
 
 	var outBuf, errBuf bytes.Buffer
 	tui, serve, launch := noopLaunchers()
-	code = Run(context.Background(), append([]string{"todo"}, args...),
+	code = Run(t.Context(), append([]string{"todo"}, args...),
 		strings.NewReader(""), &outBuf, &errBuf, config.Config{}, tui, serve, launch)
 	return outBuf.String(), errBuf.String(), code
 }
@@ -63,7 +63,7 @@ func startHostPair(t *testing.T, home string) (code string, stdout *syncBuffer, 
 	t.Helper()
 	t.Setenv("HOME", home)
 
-	ctx, cancelCtx := context.WithCancel(context.Background())
+	ctx, cancelCtx := context.WithCancel(t.Context())
 	out, errOut := &syncBuffer{}, &syncBuffer{}
 	done := make(chan int, 1)
 
@@ -158,7 +158,7 @@ func pairedHost(t *testing.T, home string) (url, code string) {
 	dir := filepath.Join(home, ".todo")
 	require.NoError(t, os.MkdirAll(dir, 0o700))
 
-	repo, err := repository.Open(context.Background(), filepath.Join(t.TempDir(), "host.db"))
+	repo, err := repository.Open(t.Context(), filepath.Join(t.TempDir(), "host.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { repo.Close() })
 

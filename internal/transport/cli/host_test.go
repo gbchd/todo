@@ -44,7 +44,7 @@ func runHostCLI(t *testing.T, home, clientDB string, args ...string) (rec *hostR
 		return nil
 	}
 	full := append([]string{"todo", "--db", clientDB, "host"}, args...)
-	code = Run(context.Background(), full, strings.NewReader(""), &outBuf, &errBuf, config.Config{}, tui, serve, launch)
+	code = Run(t.Context(), full, strings.NewReader(""), &outBuf, &errBuf, config.Config{}, tui, serve, launch)
 	return rec, errBuf.String(), code
 }
 
@@ -134,7 +134,7 @@ func runHostSubcommand(t *testing.T, home string, args ...string) (stdout, stder
 	var outBuf, errBuf bytes.Buffer
 	tui, serve, host := noopLaunchers()
 	full := append([]string{"todo", "--db", newDB(t), "host"}, args...)
-	code = Run(context.Background(), full, strings.NewReader(""), &outBuf, &errBuf, config.Config{}, tui, serve, host)
+	code = Run(t.Context(), full, strings.NewReader(""), &outBuf, &errBuf, config.Config{}, tui, serve, host)
 	return outBuf.String(), errBuf.String(), code
 }
 
