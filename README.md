@@ -57,11 +57,33 @@ All three interfaces hide subtasks by default and roll them up onto their parent
 
 You always create a subtask from inside its parent: `--parent <id>` in the CLI, `enter` then `a` in the TUI, and the inline "Add a subtask" field in the web UI's task detail. See [ADR-0001](./docs/adr/0001-subtasks-as-self-referential-tasks.md).
 
-Every subcommand accepts `--db <path>` to point at a specific SQLite file.
+Every subcommand accepts `--db <path>` to point at a specific SQLite file (on a device paired with a host, see `--local` under [Configuration](#choosing-a-backend)).
 
 ## Configuration
 
 On first run, `todo` creates `~/.todo/config.toml` with the current defaults (SQLite file location, default TUI layout, default web port). Flags always override the config file; the config file overrides built-in defaults.
+
+### Choosing a backend
+
+`config.toml` also says where this machine's tasks live:
+
+```toml
+[backend]
+kind = "local"        # the default: the SQLite file db_path names, on this machine
+```
+
+`todo pair <host url> <code>` rewrites that block to `kind = "remote"` with the host's URL and the credential the host issued. A remote client keeps nothing locally — every command reads and writes the host's list — and it is online-only: if the host cannot be reached, the command says so and does nothing else.
+
+Three things can override the file, narrowest last:
+
+```sh
+export TODO_HOST_SECRET=...            # supply the credential from the environment
+                                       # instead of keeping it in config.toml
+todo --local list                      # use this machine's own database, just this once
+todo --local --db ~/old/todo.db list   # ...or a specific file
+```
+
+Pairing never migrates, imports, or touches an existing local database — it is left exactly where it was, and `--local` is how you read it again. Passing `--db` on a paired device *without* `--local` is an error rather than a silent choice between two different task lists.
 
 ## Development
 

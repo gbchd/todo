@@ -9,6 +9,7 @@
 package credential
 
 import (
+	"cmp"
 	"crypto/rand"
 	"fmt"
 	"strings"
@@ -24,12 +25,13 @@ import (
 // together.
 const separator = "."
 
-// cost is the bcrypt work factor. It is deliberately the library default
-// rather than the minimum: the secret's own entropy is the primary defence,
-// and the work factor is what remains if a host's config file is read by
-// someone who then wants to use it. The price is paid once per request, which
-// on a personal host is small beside the round-trip that carried it.
-const cost = bcrypt.DefaultCost
+// DefaultCost is the bcrypt work factor Issue uses. It is deliberately the
+// library default rather than the minimum: the secret's own entropy is the
+// primary defence, and the work factor is what remains if a host's config file
+// is read by someone who then wants to use it. The price is paid once per
+// request, which on a personal host is small beside the round-trip that
+// carried it.
+const DefaultCost = bcrypt.DefaultCost
 
 // Credential is one registered device as authentication sees it: the id a
 // token names and the hash a secret is checked against. Neither field can be
@@ -60,8 +62,27 @@ type Source func(id string) (Credential, bool)
 // registered and how the token reaches it, and calls this for the credential
 // itself.
 func Issue() (Credential, string, error) {
+	return Issuer{}.Issue()
+}
+
+// Issuer mints credentials at a chosen bcrypt work factor.
+//
+// It exists for one reason: a test suite that makes hundreds of authenticated
+// requests pays DefaultCost on every one of them, which turns a second of
+// testing into minutes. Its zero value is DefaultCost, so the production path
+// — Issue, above — cannot be weakened by forgetting to set anything; only a
+// caller that deliberately writes a Cost down gets anything else, and the only
+// callers that do are tests. Verification needs no such seam: bcrypt reads the
+// work factor back out of the hash it is checking against.
+type Issuer struct {
+	// Cost is the bcrypt work factor; zero means DefaultCost.
+	Cost int
+}
+
+// Issue mints a credential hashed at i.Cost.
+func (i Issuer) Issue() (Credential, string, error) {
 	id, secret := rand.Text(), rand.Text()
-	hash, err := bcrypt.GenerateFromPassword([]byte(secret), cost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(secret), cmp.Or(i.Cost, DefaultCost))
 	if err != nil {
 		return Credential{}, "", fmt.Errorf("hashing device secret: %w", err)
 	}
@@ -112,6 +133,6 @@ func VerifyAbsent(secret string) bool {
 var absent = sync.OnceValue(func() Credential {
 	// GenerateFromPassword fails only on an out-of-range cost, and cost is a
 	// constant this package owns. An empty hash would still verify to false.
-	hash, _ := bcrypt.GenerateFromPassword([]byte(rand.Text()), cost)
+	hash, _ := bcrypt.GenerateFromPassword([]byte(rand.Text()), DefaultCost)
 	return Credential{SecretHash: string(hash)}
 })

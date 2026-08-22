@@ -65,3 +65,31 @@ func TestUpdateTask_NotFound(t *testing.T) {
 	_, err := updateTask(context.Background(), repo.db, todo.Task{ID: 999, Title: "x", CreatedAt: time.Now(), UpdatedAt: time.Now()})
 	require.ErrorIs(t, err, todo.ErrNotFound)
 }
+
+// TestCreate_KeepsTheCallersTimestamps pins what the contract suite cannot ask
+// of every implementation. Timestamps belong to whichever machine owns the
+// tasks, and for this adapter that machine is this one: it stores what the
+// Service stamped, to the nanosecond, rather than inventing its own. The HTTP
+// adapter's host re-derives them instead — which is the difference the port's
+// documentation calls out, and the reason this assertion lives here and not in
+// the shared suite.
+func TestCreate_KeepsTheCallersTimestamps(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+	created := time.Date(2026, 7, 23, 10, 0, 0, 0, time.UTC)
+	updated := created.Add(time.Hour)
+	completed := created.Add(2 * time.Hour)
+
+	stored, err := repo.Create(ctx, todo.Task{
+		Title: "stamped", Status: todo.StatusDone, Priority: todo.PriorityNone,
+		CreatedAt: created, UpdatedAt: updated, CompletedAt: &completed,
+	})
+	require.NoError(t, err)
+
+	got, err := repo.Get(ctx, stored.ID)
+	require.NoError(t, err)
+	assert.True(t, got.CreatedAt.Equal(created), "CreatedAt = %v, want %v", got.CreatedAt, created)
+	assert.True(t, got.UpdatedAt.Equal(updated), "UpdatedAt = %v, want %v", got.UpdatedAt, updated)
+	require.NotNil(t, got.CompletedAt)
+	assert.True(t, got.CompletedAt.Equal(completed), "CompletedAt = %v, want %v", got.CompletedAt, completed)
+}
