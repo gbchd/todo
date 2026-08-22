@@ -19,6 +19,7 @@ import (
 	"github.com/gbchd/todo/internal/credential"
 	"github.com/gbchd/todo/internal/pairing"
 	"github.com/gbchd/todo/internal/repository"
+	"github.com/gbchd/todo/internal/repository/remote"
 	"github.com/gbchd/todo/internal/service/todo"
 )
 
@@ -89,6 +90,10 @@ func buildRoot(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout
 		ErrWriter: stderr,
 		Flags: []tcli.Flag{
 			&tcli.StringFlag{Name: "db", Usage: "path to the SQLite database", Value: cfg.DBPath},
+			&tcli.BoolFlag{
+				Name:  config.LocalFlag,
+				Usage: "use this machine's own database for this command, even when paired with a host",
+			},
 		},
 		ExitErrHandler: func(context.Context, *tcli.Command, error) {},
 		Before: func(ctx context.Context, cmd *tcli.Command) (context.Context, error) {
@@ -100,7 +105,28 @@ func buildRoot(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout
 			if needsNoRepository(cmd.Args().First()) {
 				return ctx, nil
 			}
-			r, err := repository.Open(ctx, cmd.String("db"))
+
+			// Which backend this command speaks to is settled before anything
+			// is opened, so that a refusal — a --db against a paired device,
+			// a host with no credential — never first creates a database it
+			// then declines to use.
+			selection, err := config.SelectBackend(cfg, config.Override{
+				Local:     cmd.Bool(config.LocalFlag),
+				DBPath:    cmd.String("db"),
+				DBPathSet: cmd.IsSet("db"),
+				Secret:    os.Getenv(config.SecretEnv),
+			})
+			if err != nil {
+				fmt.Fprintln(stderr, "Error:", err)
+				return ctx, tcli.Exit(err, 1)
+			}
+
+			if selection.Remote {
+				holder.svc = todo.NewService(remote.New(selection.HostURL, selection.Secret))
+				return ctx, nil
+			}
+
+			r, err := repository.Open(ctx, selection.DBPath)
 			if err != nil {
 				fmt.Fprintln(stderr, "Error:", err)
 				return ctx, tcli.Exit(err, 1)
