@@ -43,7 +43,7 @@ func (r *Repository) unreachable(err error) error {
 
 // rejected wraps the host's own words about a credential it would not accept.
 func (r *Repository) rejected(said string) error {
-	return fmt.Errorf("%w at %s: %s; run `todo pair %s <code>` to pair this device again",
+	return fmt.Errorf("%w: %s said: %s; run `todo pair %s <code>` to pair this device again",
 		ErrUnauthenticated, r.baseURL, said, r.baseURL)
 }
 
