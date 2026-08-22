@@ -43,11 +43,13 @@ func (r *Repository) unreachable(err error) error {
 
 // rejected wraps the host's own words about a credential it would not accept.
 func (r *Repository) rejected(said string) error {
-	return fmt.Errorf("%w at %s: %s", ErrUnauthenticated, r.baseURL, said)
+	return fmt.Errorf("%w at %s: %s; run `todo pair %s <code>` to pair this device again",
+		ErrUnauthenticated, r.baseURL, said, r.baseURL)
 }
 
 // mismatch wraps a disagreement about the protocol, carrying the host's words
 // where it had any.
 func (r *Repository) mismatch(said string) error {
-	return fmt.Errorf("%w: %s said: %s", ErrProtocolMismatch, r.baseURL, said)
+	return fmt.Errorf("%w: %s said: %s; upgrade todo on this device or on the host",
+		ErrProtocolMismatch, r.baseURL, said)
 }
