@@ -16,6 +16,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/gbchd/todo/internal/config"
+	"github.com/gbchd/todo/internal/credential"
 	"github.com/gbchd/todo/internal/repository"
 	"github.com/gbchd/todo/internal/service/todo"
 )
@@ -36,7 +37,8 @@ type TUILauncher func(ctx context.Context, svc *todo.Service, layout string, std
 type ServeLauncher func(ctx context.Context, svc *todo.Service, addr string, stdout io.Writer) error
 
 // HostLauncher starts the host adapter; wired to internal/transport/host.Run.
-type HostLauncher func(ctx context.Context, svc *todo.Service, addr string, stdout io.Writer) error
+// creds is how the host resolves the device a request's token names.
+type HostLauncher func(ctx context.Context, svc *todo.Service, addr string, creds credential.Source, stdout io.Writer) error
 
 // Run parses args and executes the matching todo subcommand, returning the
 // process exit code. urfave/cli is the single parser for --db: the root
@@ -447,8 +449,10 @@ const hostCommandName = "host"
 // are validated before anything is opened or bound — a refusal to listen must
 // not first create a database.
 //
-// `todo host pair`, `todo host clients` and `todo host revoke` mount here as
-// subcommands once device credentials exist.
+// `todo host clients` and `todo host revoke` mount here as subcommands, and
+// `todo host pair` joins them once pairing exists. They manage the same file
+// this action reads, which is why none of them takes a path: host.toml is the
+// host's, singular.
 func hostCommand(stdout, stderr io.Writer, runHost HostLauncher) *tcli.Command {
 	return &tcli.Command{
 		Name:  hostCommandName,
@@ -456,6 +460,10 @@ func hostCommand(stdout, stderr io.Writer, runHost HostLauncher) *tcli.Command {
 		Flags: []tcli.Flag{
 			&tcli.StringFlag{Name: "addr", Usage: "address to listen on"},
 			&tcli.StringFlag{Name: "db", Usage: "path to the SQLite database the host owns"},
+		},
+		Commands: []*tcli.Command{
+			hostClientsCommand(stdout, stderr),
+			hostRevokeCommand(stdout, stderr),
 		},
 		Action: func(ctx context.Context, cmd *tcli.Command) error {
 			hostCfg, err := config.LoadHost()
@@ -478,7 +486,77 @@ func hostCommand(stdout, stderr io.Writer, runHost HostLauncher) *tcli.Command {
 			}
 			defer repo.Close()
 
-			return runHost(ctx, todo.NewService(repo), hostCfg.ListenAddr, stdout)
+			return runHost(ctx, todo.NewService(repo), hostCfg.ListenAddr, hostCredentials, stdout)
+		},
+	}
+}
+
+// hostCredentials resolves the device a token names by reading host.toml, and
+// is called once per authenticated request rather than once at startup.
+//
+// Revoking a device that was lost this morning has to take effect this
+// morning; a revocation that waits for the operator to remember to restart the
+// host is not a revocation. Re-reading a handful of lines of TOML costs
+// nothing beside the password-hash verification that immediately follows it.
+// A file that cannot be read denies the request, because a credential store
+// that fails open is worse than one that is down.
+func hostCredentials(id string) (credential.Credential, bool) {
+	cfg, err := config.LoadHost()
+	if err != nil {
+		return credential.Credential{}, false
+	}
+	return cfg.Credential(id)
+}
+
+// hostClientsCommand lists the devices registered with this host.
+//
+// It prints each device's name, its credential id, and when it was added, and
+// deliberately nothing else: the file it reads holds a password hash per
+// device and no usable secret, and printing the hash would only invite someone
+// to paste it somewhere. The id is not secret — it is half of a token, and the
+// half that proves nothing — and is shown because revoke needs it whenever two
+// devices share a name.
+func hostClientsCommand(stdout, stderr io.Writer) *tcli.Command {
+	return &tcli.Command{
+		Name:  "clients",
+		Usage: "list the devices registered with this host",
+		Action: func(_ context.Context, _ *tcli.Command) error {
+			cfg, err := config.LoadHost()
+			if err != nil {
+				return reportErr(stderr, err, 0)
+			}
+			printClients(stdout, cfg.Clients)
+			return nil
+		},
+	}
+}
+
+// hostRevokeCommand removes one device's credential, leaving every other
+// device working. There is no confirmation prompt: revoking is the safe
+// direction, and the cost of a mistake is one re-pairing.
+func hostRevokeCommand(stdout, stderr io.Writer) *tcli.Command {
+	return &tcli.Command{
+		Name:      "revoke",
+		Usage:     "remove one device's credential",
+		ArgsUsage: "<device name or id>",
+		Action: func(_ context.Context, cmd *tcli.Command) error {
+			target := cmd.Args().First()
+			if target == "" {
+				return reportErr(stderr, errors.New("missing device: name or id of the device to revoke"), 0)
+			}
+			cfg, err := config.LoadHost()
+			if err != nil {
+				return reportErr(stderr, err, 0)
+			}
+			removed, err := cfg.RemoveClient(target)
+			if err != nil {
+				return reportErr(stderr, err, 0)
+			}
+			if err := config.SaveHost(cfg); err != nil {
+				return reportErr(stderr, err, 0)
+			}
+			fmt.Fprintf(stdout, "Revoked %s (%s). Every other device keeps working.\n", removed.Name, removed.ID)
+			return nil
 		},
 	}
 }
