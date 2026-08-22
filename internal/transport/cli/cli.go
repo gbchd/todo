@@ -150,7 +150,7 @@ func buildRoot(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout
 			doneCommand(holder, stdout, stderr),
 			reopenCommand(holder, stdout, stderr),
 			deleteCommand(holder, stdin, stdout, stderr),
-			tuiCommand(holder, cfg, stdin, stdout, runTUI),
+			tuiCommand(holder, cfg, stdin, stdout, stderr, runTUI),
 			serveCommand(holder, cfg, stdout, runServe),
 			hostCommand(stdout, stderr, runHost),
 			pairCommand(stdout, stderr),
@@ -460,7 +460,11 @@ func confirm(r io.Reader) bool {
 	return line == "y" || line == "yes"
 }
 
-func tuiCommand(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout io.Writer, runTUI TUILauncher) *tcli.Command {
+// tuiCommand launches the interactive UI. A launcher that returns before the
+// session ever ran — a paired device whose host did not answer the first read
+// — is reported like any other command's failure, so that `todo tui` and `todo
+// list` against the same dead host exit the same way and say the same thing.
+func tuiCommand(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout, stderr io.Writer, runTUI TUILauncher) *tcli.Command {
 	return &tcli.Command{
 		Name:  "tui",
 		Usage: "launch the interactive terminal UI",
@@ -468,7 +472,10 @@ func tuiCommand(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdou
 			&tcli.StringFlag{Name: "layout", Value: cfg.TUILayout, Usage: "list|split|kanban"},
 		},
 		Action: func(ctx context.Context, cmd *tcli.Command) error {
-			return runTUI(ctx, holder.svc, cmd.String("layout"), stdin, stdout)
+			if err := runTUI(ctx, holder.svc, cmd.String("layout"), stdin, stdout); err != nil {
+				return reportErr(stderr, err, 0)
+			}
+			return nil
 		},
 	}
 }

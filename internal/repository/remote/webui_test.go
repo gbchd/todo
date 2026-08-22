@@ -83,4 +83,15 @@ func TestWebUI_SurfacesAnUnreachableHost(t *testing.T) {
 
 	assert.GreaterOrEqual(t, rec.Code, 500, "an unreachable host is not an empty task list")
 	assert.NotEqual(t, "[]\n", rec.Body.String())
+
+	// The browser renders whatever is in "error", so what the adapter said has
+	// to survive the hop: the frontend shows that string and, because the
+	// request failed rather than returning nothing, keeps its "no tasks yet"
+	// message for a list that is genuinely empty.
+	var body struct {
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Contains(t, body.Error, "cannot reach the todo host")
+	assert.Contains(t, body.Error, url, "the page must name the host that did not answer")
 }

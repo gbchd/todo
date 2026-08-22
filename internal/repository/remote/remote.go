@@ -288,6 +288,12 @@ func (r *Repository) errorFor(resp *http.Response, path string) error {
 
 	var body errorBody
 	if json.Unmarshal(raw, &body) != nil || body.Error == "" {
+		// A 401 is a rejected credential even when whatever answered it did
+		// not phrase itself in this protocol's terms — a reverse proxy in
+		// front of the host answers exactly like this.
+		if resp.StatusCode == http.StatusUnauthorized {
+			return r.rejected("it answered " + resp.Status + " and said nothing this todo could read")
+		}
 		if resp.StatusCode == http.StatusNotFound {
 			return fmt.Errorf("%w: %s does not serve %s; upgrade todo on one of these machines",
 				ErrProtocolMismatch, r.baseURL, path)
@@ -297,9 +303,9 @@ func (r *Repository) errorFor(resp *http.Response, path string) error {
 
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
-		return fmt.Errorf("%w: %s", ErrUnauthenticated, body.Error)
+		return r.rejected(body.Error)
 	case resp.StatusCode == http.StatusBadRequest && body.Field == "" && body.Conflict == nil:
-		return fmt.Errorf("%w: %s", ErrProtocolMismatch, body.Error)
+		return r.mismatch(body.Error)
 	default:
 		return toDomainError(resp.StatusCode, body)
 	}

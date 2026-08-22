@@ -320,14 +320,33 @@ func (m model) View() string {
 	if m.quit {
 		return ""
 	}
+	var body string
 	switch m.layout {
 	case layoutSplit:
-		return m.viewSplit()
+		body = m.viewSplit()
 	case layoutKanban:
-		return m.viewKanban()
+		body = m.viewKanban()
 	default:
-		return m.viewList()
+		body = m.viewList()
 	}
+	return body + m.statusLine()
+}
+
+// statusLine is where a failure the session survived is shown: a write the
+// host refused or never received, on a device that is paired. It is a line
+// under the layout rather than a modal because the tasks on screen are still
+// the tasks the user was working on — the failure did not take them away, and
+// dismissing something to get back to them would suggest it had.
+//
+// It is empty whenever nothing has failed, which is what keeps it out of every
+// layout's ordinary rendering, and the next reload that succeeds clears it:
+// the model caches nothing, so a frame with no error on it was painted from an
+// answer the host gave just now.
+func (m model) statusLine() string {
+	if m.err == nil {
+		return ""
+	}
+	return "\n" + errorStyle.Render("! "+m.err.Error())
 }
 
 // overlay renders whatever modal is active (form, detail, or delete
@@ -462,11 +481,17 @@ func (m model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quit = true
 		return m, tea.Quit
 	case "y":
-		if err := m.svc.DeleteTask(m.ctx, m.pendingDeleteID); err != nil {
-			m.err = err
-		}
+		err := m.svc.DeleteTask(m.ctx, m.pendingDeleteID)
 		m.pendingDeleteID = 0
 		m.mode = modeBrowse
+		if err != nil {
+			// The delete is reported and the list is left alone: re-reading
+			// now would either fail too and replace the message with a less
+			// specific one, or succeed and quietly erase the news that the
+			// task the user asked to delete is still there.
+			m.err = err
+			return m, nil
+		}
 		m.reload()
 	case "n", "esc":
 		m.pendingDeleteID = 0
