@@ -1,4 +1,4 @@
-# Device credentials are hashed, per-device secrets
+# Device credentials are hashed, per-device secrets, handed over by pairing
 
 A `todo host` may be reachable from outside the machine it runs on, so
 possession of its URL must grant nothing. Every request to the task API carries
@@ -62,6 +62,76 @@ operation that must never be even slightly stale. Not worth it. If it ever
 becomes worth it, the cache goes behind `credential.Verify` and nothing else
 changes.
 
+## Pairing is a window a human holds open
+
+A device with no credential still has to get one, and "one command on the host,
+one on the device" means it comes over the same network the tasks do.
+`todo host pair` prints a six-character code and waits; the device posts that
+code to `/pair`; the host answers once, with a freshly issued token.
+
+Six characters from a 32-character alphabet is about thirty bits. That is not
+enough on its own — and it is never on its own. Four defences hold it up, and
+they are joint rather than layered: each answers a different question, and to
+the other three questions its answer is "that is not what I am for".
+
+1. **The window is short.** Three minutes if nothing else closes it, and
+   something else usually does: it closes on the first success, and it closes
+   when the operator interrupts `todo host pair`, because the command that
+   opened it is the command that withdraws it. This is what makes a code read
+   over the operator's shoulder, or left on a screen they walked away from,
+   worthless — and nothing else does.
+2. **The code is single use.** The first success consumes the offer before it
+   returns, so a code that already paired a device pairs nothing else. Without
+   this a code that worked keeps working, and the operator has no reason ever
+   to look at it again.
+3. **Wrong guesses burn it.** Five wrong codes destroy the offer rather than
+   merely rejecting the fifth. This is the defence that bounds *guessing*: it
+   turns thirty bits with unlimited tries into thirty bits with five, and it
+   fails closed — the attacker's reward for guessing is that nobody pairs.
+4. **Pairing requests are globally rate-limited.** Ten at once, then one every
+   six seconds. Its job is not the guessing, which (3) already bounds; its job
+   is that (3) is also a weapon. Five requests can destroy an offer an operator
+   is standing there waiting on, so the limit is checked *before* the offer is
+   touched and a flood cannot burn a code. It is global rather than per
+   address, because a per-address limit is the kind an attacker with more than
+   one address defeats for free, and the legitimate traffic this route ever
+   sees is one request from one device.
+
+So none of the four may be relaxed on the grounds that another one covers it.
+Loosening the window does not become safe because the code is single use;
+raising the attempt limit for an operator who mistypes does not become safe
+because requests are rate-limited. The short code is what makes pairing usable,
+and these four together are the entire reason a short code is defensible.
+
+## The pairing route answers as a route that does not exist
+
+Every refusal is `http.NotFound` — the wrong method, a body that will not
+parse, no offer outstanding, an expired or spent or burned offer, a wrong code,
+the rate limit, a registration that failed. Not a similar 404: the same status,
+the same headers, the same bytes the mux returns for a path it does not route.
+The route is registered without a method for the same reason, so that a GET
+reaches the handler and is answered with a 404 rather than having the mux reply
+405, which would announce that the route is real.
+
+The point is that a scan of the host learns nothing: not that this build knows
+what pairing is, not that a window is open right now, not that a guess was
+close. An enrolment endpoint that hands out long-lived credentials is the most
+exposed surface in this design, and the cheapest thing it can give away is the
+knowledge that it exists.
+
+The protocol version header is deliberately *not* required here, though every
+task route requires it. Enforcing it would mean either explaining a version
+mismatch — which tells a scanner the route is real — or answering it with the
+404, which tells the device's owner nothing they can act on. Letting an old
+client pair and then meet the clear "upgrade todo" message on its first task
+request is better than both.
+
+The cost is paid by the honest device: `todo pair` cannot be told which refusal
+it hit, so its error message has to name all of them at once — expired, already
+used, mistyped, or no pairing in progress. That is the price of the property,
+and it is the right way round: the message a legitimate user reads is longer,
+and the message an attacker reads does not exist.
+
 ## Considered options
 
 **OAuth2 client_credentials** is the standard answer and would give token
@@ -95,6 +165,30 @@ chat message to oneself, and there is no moment at which it stops being valid
 because nobody deletes the copy. It also fails the story this feature exists
 for: adding a device should be one command on the host and one on the device,
 not a file transfer between them.
+
+**Idempotency keys for pairing retries** — the device mints a key, sends it
+alongside the code, and a repeated request carrying the same key gets the same
+token back instead of a 404 — were rejected. The failure they would rescue is
+real but small: the host registered the device and the reply was lost, leaving a
+device with no token and a host with a client entry nobody holds. The recovery
+for that today is already correct and takes one command — run `todo host pair`
+again, pair the device, and revoke the stranded entry, which is a credential
+nobody possesses. What the key would buy is not worth what it costs.
+
+It costs the property. "A code is single use" would become "a code is single use
+unless you ask for the same one again", which a reader has to reason about
+rather than rely on, and every future change to pairing would have to be checked
+against the exception. It costs server state: the host would have to remember
+the key *and the token it returned* — the one secret this design goes out of its
+way never to store — for long enough to be useful, past the point where the
+offer itself is consumed. And it costs the indistinguishability above: a route
+that remembers keys is a route with a second thing it can answer differently,
+and the whole `/pair` design is that it has exactly one.
+
+The general point: pairing is not an operation that wants to be retried. It is a
+human standing at a machine for three minutes. When it fails, the human is right
+there, and asking them to run it again is a better answer than a mechanism that
+makes a single-use secret usable twice.
 
 ## The protocol version is a header, not just a path
 
@@ -132,6 +226,16 @@ both true and more useful when the credential is stale, malformed, or absent.
 - **The secret is never recoverable.** Nothing retains it after `Issue`
   returns. A device that loses its token is revoked and paired again; there is
   no rotate-in-place.
+- **The four pairing defences are one mechanism, not a stack.** The window, the
+  single use, the attempt lockout, and the global rate limit each cover
+  something the others do not, and the six-character code is only defensible
+  with all four. Changing any of them is a change to the whole argument.
+- **`todo pair` cannot say why a code was refused.** The host answers every
+  refusal identically on purpose, so the device's message names every reason at
+  once. A friendlier message here would be a worse host.
+- **A lost pairing reply costs one re-run.** There is no retry mechanism and no
+  idempotency key: `todo host pair` again, and revoke the stranded client entry
+  if one was left behind.
 - **A device name is a label, not an identity.** Two laptops may both be called
   "laptop". `todo host revoke` accepts a name when it is unambiguous and refuses
   to guess when it is not, naming the ids to disambiguate with.
