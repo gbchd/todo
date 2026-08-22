@@ -11,7 +11,6 @@
 package hosttest
 
 import (
-	"context"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
@@ -38,7 +37,7 @@ type Hosted struct {
 // returns the Service a host would serve from it.
 func NewService(t *testing.T) *todo.Service {
 	t.Helper()
-	repo, err := repository.Open(context.Background(), filepath.Join(t.TempDir(), "host.db"))
+	repo, err := repository.Open(t.Context(), filepath.Join(t.TempDir(), "host.db"))
 	require.NoError(t, err, "open the host's database")
 	t.Cleanup(func() { repo.Close() })
 	return todo.NewService(repo)

@@ -2,7 +2,6 @@ package host
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -24,7 +23,7 @@ func newTestMux(t *testing.T, mw ...Middleware) http.Handler {
 
 func newTestService(t *testing.T, dbPath string) *todo.Service {
 	t.Helper()
-	repo, err := repository.Open(context.Background(), dbPath)
+	repo, err := repository.Open(t.Context(), dbPath)
 	require.NoError(t, err, "open repo")
 	t.Cleanup(func() { repo.Close() })
 	return todo.NewService(repo)
@@ -40,7 +39,7 @@ func doJSON(t *testing.T, mux http.Handler, method, path string, body any) *http
 	} else {
 		reader = bytes.NewReader(nil)
 	}
-	req := httptest.NewRequestWithContext(context.Background(), method, path, reader)
+	req := httptest.NewRequestWithContext(t.Context(), method, path, reader)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	return rec
@@ -123,6 +122,42 @@ func TestCreateTask_ValidationErrorCarriesField(t *testing.T) {
 	assert.Equal(t, "title", body.Field, "a client must rebuild the ValidationError from fields, not from prose")
 	assert.Equal(t, "must not be empty", body.Message)
 	assert.Equal(t, "title: must not be empty", body.Error)
+}
+
+// A client's repository adapter is handed whole tasks and cannot follow a
+// create it may not retry with a second write, so the status it was given goes
+// out in the create itself — and the lifecycle rule that stamps CompletedAt
+// still applies, because the host reaches it through the Service.
+func TestCreateTask_CreatesTheTaskInTheStatusAsked(t *testing.T) {
+	mux := newTestMux(t)
+	created := createTaskViaAPI(t, mux, map[string]any{"title": "Buy milk", "status": "done"})
+
+	assert.Equal(t, "done", created.Status)
+	assert.NotNil(t, created.CompletedAt, "a task created done is completed at the host's clock")
+
+	// And it is that task on the host, not just in the answer.
+	stored := decodeTask(t, doJSON(t, mux, http.MethodGet, taskPath(created.ID), nil))
+	assert.Equal(t, "done", stored.Status)
+	assert.NotNil(t, stored.CompletedAt)
+}
+
+func TestCreateTask_OpensATaskThatNamesNoStatus(t *testing.T) {
+	created := createTaskViaAPI(t, newTestMux(t), map[string]any{"title": "Buy milk"})
+	assert.Equal(t, "open", created.Status)
+	assert.Nil(t, created.CompletedAt)
+}
+
+// The request failed, so the task it half-made must not outlive it: the client
+// is told nothing was created, and nothing was.
+func TestCreateTask_LeavesNothingBehindWhenTheStatusIsRejected(t *testing.T) {
+	mux := newTestMux(t)
+
+	rec := doJSON(t, mux, http.MethodPost, "/api/v1/tasks", map[string]any{"title": "Buy milk", "status": "nonsense"})
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body=%s", rec.Body.String())
+	assert.Equal(t, "status", decodeError(t, rec).Field)
+
+	listed := decodeTasks(t, doJSON(t, mux, http.MethodGet, "/api/v1/tasks", nil))
+	assert.Empty(t, listed, "a rejected create must not leave a task behind")
 }
 
 // The write model is narrower than the read model on purpose: storage owns the
@@ -376,7 +411,7 @@ func TestMiddlewareWrapsEveryTaskRoute(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, doJSON(t, mux, http.MethodDelete, "/api/v1/tasks/1", nil).Code)
 	assert.Len(t, seen, 5)
 
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/tasks", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/tasks", nil)
 	req.Header.Set("X-Test-Reject", "yes")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -392,11 +427,11 @@ func TestColocatedLocalClientSharesTheDatabase(t *testing.T) {
 	local := newTestService(t, dbPath)
 
 	created := createTaskViaAPI(t, mux, map[string]any{"title": "added over HTTP"})
-	fromLocal, err := local.GetTask(context.Background(), created.ID)
+	fromLocal, err := local.GetTask(t.Context(), created.ID)
 	require.NoError(t, err, "local client reading the host's database")
 	assert.Equal(t, "added over HTTP", fromLocal.Title)
 
-	addedLocally, err := local.AddTask(context.Background(), todo.NewTask{Title: "added locally"})
+	addedLocally, err := local.AddTask(t.Context(), todo.NewTask{Title: "added locally"})
 	require.NoError(t, err, "local client writing the host's database")
 
 	rec := doJSON(t, mux, http.MethodGet, taskPath(addedLocally.ID), nil)

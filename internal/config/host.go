@@ -121,6 +121,43 @@ func (c HostConfig) Credential(id string) (credential.Credential, bool) {
 	return credential.Credential{}, false
 }
 
+// Validate reports why the host must not start with these settings. A
+// non-loopback listen address with no device credentials registered is an open
+// door: anyone who can reach the address could read and write the task list,
+// so it is refused rather than served. Registering a credential is what lifts
+// the restriction.
+func (c HostConfig) Validate() error {
+	loopback, err := loopbackAddr(c.ListenAddr)
+	if err != nil {
+		return err
+	}
+	if loopback || len(c.Clients) > 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"refusing to listen on %s: no device credentials are registered, so anyone who can reach that address could read and write your tasks; listen on a loopback address such as %s instead",
+		c.ListenAddr, DefaultHostAddr)
+}
+
+// loopbackAddr reports whether addr binds only the loopback interface. A bare
+// port (":8090") binds every interface, and a hostname we would have to
+// resolve to classify is treated as non-loopback: guessing wrong in the other
+// direction is what opens the door.
+func loopbackAddr(addr string) (bool, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false, fmt.Errorf("parse listen address %q: %w", addr, err)
+	}
+	if host == "localhost" {
+		return true, nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false, nil
+	}
+	return ip.IsLoopback(), nil
+}
+
 // LoadHost reads host.toml from ~/.todo, creating it with defaults on first
 // run.
 func LoadHost() (HostConfig, error) {
@@ -174,41 +211,4 @@ func SaveHostTo(dir string, cfg HostConfig) error {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
 	return save(filepath.Join(dir, hostFileName), cfg)
-}
-
-// Validate reports why the host must not start with these settings. A
-// non-loopback listen address with no device credentials registered is an open
-// door: anyone who can reach the address could read and write the task list,
-// so it is refused rather than served. Registering a credential is what lifts
-// the restriction.
-func (c HostConfig) Validate() error {
-	loopback, err := loopbackAddr(c.ListenAddr)
-	if err != nil {
-		return err
-	}
-	if loopback || len(c.Clients) > 0 {
-		return nil
-	}
-	return fmt.Errorf(
-		"refusing to listen on %s: no device credentials are registered, so anyone who can reach that address could read and write your tasks; listen on a loopback address such as %s instead",
-		c.ListenAddr, DefaultHostAddr)
-}
-
-// loopbackAddr reports whether addr binds only the loopback interface. A bare
-// port (":8090") binds every interface, and a hostname we would have to
-// resolve to classify is treated as non-loopback: guessing wrong in the other
-// direction is what opens the door.
-func loopbackAddr(addr string) (bool, error) {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return false, fmt.Errorf("parse listen address %q: %w", addr, err)
-	}
-	if host == "localhost" {
-		return true, nil
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false, nil
-	}
-	return ip.IsLoopback(), nil
 }

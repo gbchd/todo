@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -58,7 +59,10 @@ func hostPairCommand(stdout, stderr io.Writer) *tcli.Command {
 				return reportErr(stderr, err, 0)
 			}
 
-			store := pairing.NewStore(dir, registerDevice)
+			// No registrar: this command opens and withdraws the window, and
+			// the running host is the only process that may turn a redeemed
+			// code into a credential. See pairing.Store.
+			store := pairing.NewStore(dir, nil)
 			if err := store.Open(code, pairing.Window); err != nil {
 				return reportErr(stderr, err, 0)
 			}
@@ -79,8 +83,36 @@ func printPairingCode(stdout io.Writer, code, listenAddr string) {
 	fmt.Fprintf(stdout, "Pairing code: %s\n\n", code)
 	fmt.Fprintf(stdout, "It is valid for %s, can be used once, and is burned after %d wrong tries.\n",
 		pairing.Window, pairing.MaxAttempts)
-	fmt.Fprintf(stdout, "On the new device run:\n\n    todo pair http://%s %s\n\n", listenAddr, code)
+
+	target, note := pairTarget(listenAddr)
+	fmt.Fprintf(stdout, "On the new device run:\n\n    todo pair %s %s\n\n", target, code)
+	if note != "" {
+		fmt.Fprintf(stdout, "%s\n\n", note)
+	}
 	fmt.Fprintln(stdout, "Waiting for the device... (Ctrl-C withdraws the code)")
+}
+
+// pairTarget turns the address the host listens on into the URL to type on the
+// device, plus the line that has to go with it when there is no such URL.
+//
+// A wildcard address — ":8090", "0.0.0.0:8090", "[::]:8090" — is exactly what
+// an operator binds to make the host reachable from other machines, and is the
+// one address no other machine can connect to. Echoing it back as a URL hands
+// them a command that cannot work and no clue why, so the host part is left as
+// a placeholder for the address they know and this command does not: which of
+// the machine's interfaces the new device can see.
+func pairTarget(listenAddr string) (target, note string) {
+	addr, port, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		// Not an address this can take apart; print it as it stands rather
+		// than inventing one. Whether the host will bind it is its problem.
+		return "http://" + listenAddr, ""
+	}
+	if ip := net.ParseIP(addr); addr == "" || (ip != nil && ip.IsUnspecified()) {
+		return "http://<this host's address>:" + port,
+			"This host listens on every network interface: use the address the new device can reach it at."
+	}
+	return "http://" + net.JoinHostPort(addr, port), ""
 }
 
 // awaitPairing blocks until the offer reaches a terminal state or the operator
@@ -224,6 +256,10 @@ func normalizeHostURL(raw string) (string, error) {
 	return parsed.Scheme + "://" + parsed.Host + strings.TrimRight(parsed.Path, "/"), nil
 }
 
+// pairMaxResponse bounds what is read back from a URL the user typed, which is
+// not necessarily a todo host at all.
+const pairMaxResponse = 4 << 10
+
 // redeemPairingCode makes the one request pairing needs.
 //
 // The host answers a refused code with a plain 404, identical to the one it
@@ -267,7 +303,3 @@ func redeemPairingCode(ctx context.Context, base, code, name string) (pairing.Re
 	}
 	return out, nil
 }
-
-// pairMaxResponse bounds what is read back from a URL the user typed, which is
-// not necessarily a todo host at all.
-const pairMaxResponse = 4 << 10

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -333,12 +334,18 @@ func TestHostValidationErrorSurvivesTheWire(t *testing.T) {
 	}
 }
 
-// TestCreate_StoresANonOpenStatus covers what the create endpoint has no room
-// for. The Service never creates anything but an open task, but the port makes
-// no such promise, and a repository that quietly dropped the status would
-// break the contract suite's fixtures — and any future caller.
-func TestCreate_StoresANonOpenStatus(t *testing.T) {
-	repo, _ := newHostedRepo(t)
+// TestCreate_StoresANonOpenStatusInOneWrite pins both halves of what the
+// create body carries. The Service never creates anything but an open task,
+// but the port makes no such promise, and a repository that quietly dropped
+// the status would break the contract suite's fixtures — and any future
+// caller. It must also do it in the one request it is allowed: Create is never
+// retried, so a second write behind it is a write whose failure would report a
+// task that does exist as a task that was not created.
+func TestCreate_StoresANonOpenStatusInOneWrite(t *testing.T) {
+	posts := &interference{method: http.MethodPost}
+	patches := &interference{method: http.MethodPatch}
+	repo, _ := newHostedRepo(t, posts.middleware, patches.middleware)
+
 	created, err := repo.Create(t.Context(), todo.Task{
 		Title: "already finished", Status: todo.StatusDone, Priority: todo.PriorityNone,
 	})
@@ -346,9 +353,69 @@ func TestCreate_StoresANonOpenStatus(t *testing.T) {
 	assert.Equal(t, todo.StatusDone, created.Status)
 	assert.NotNil(t, created.CompletedAt, "the host stamps the completion time it derives")
 
+	assert.Equal(t, int64(1), posts.seen.Load(), "Create is one request")
+	assert.Zero(t, patches.seen.Load(), "the status must not be compensated for with a second write")
+
 	got, err := repo.Get(t.Context(), created.ID)
 	require.NoError(t, err)
 	assert.Equal(t, todo.StatusDone, got.Status)
+}
+
+// A dropped filter key is invisible from above the port: the Service sorts
+// what it is handed a second time, so a host that never heard of the sort
+// still answers in an order the caller cannot fault. The only place the key
+// can be held to is the request itself.
+func TestList_SendsTheWholeFilterOnTheWire(t *testing.T) {
+	var query url.Values
+	capture := &interference{method: http.MethodGet}
+	capture.before = func(_ http.ResponseWriter, r *http.Request, _ int64) bool {
+		query = r.URL.Query()
+		return false
+	}
+	repo, _ := newHostedRepo(t, capture.middleware)
+
+	before := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	after := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	status, priority := todo.StatusDone, todo.PriorityHigh
+	_, err := repo.List(t.Context(), todo.TaskFilter{
+		Status:    &status,
+		Priority:  &priority,
+		DueBefore: &before,
+		DueAfter:  &after,
+		ParentID:  todo.Set[*int64](nil),
+		SortBy:    todo.SortPriority,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "priority", query.Get("sort"), "the sort key must reach the host")
+	assert.Equal(t, "done", query.Get("status"))
+	assert.Equal(t, "high", query.Get("priority"))
+	assert.Equal(t, "2026-08-01", query.Get("due_before"))
+	assert.Equal(t, "2026-07-01", query.Get("due_after"))
+	assert.Equal(t, "none", query.Get("parent"))
+}
+
+// The sort key travels as the domain spells it, because the host hands the
+// raw string back to its own Service: a name this end invented would come
+// back as a validation error from the other one.
+func TestFilterQuery_SortKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		key  todo.SortKey
+		want string
+	}{
+		{name: "the default is not sent at all", key: todo.SortDefault},
+		{name: "priority", key: todo.SortPriority, want: "priority"},
+		{name: "id", key: todo.SortID, want: "id"},
+		{name: "created", key: todo.SortCreated, want: "created"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := filterQuery(todo.TaskFilter{SortBy: tt.key})
+			assert.Equal(t, tt.want, q.Get("sort"))
+			assert.Equal(t, tt.want != "", q.Has("sort"), "an unset sort must leave the host's own default alone")
+		})
+	}
 }
 
 // TestUpdateWith_LeavesCompletedAtAloneOnAnUnrelatedEdit is why the PATCH body

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -40,7 +39,7 @@ func runWith(t *testing.T, cfg config.Config, args ...string) (stdout, stderr st
 	t.Helper()
 	var outBuf, errBuf bytes.Buffer
 	tui, serve, hostLauncher := noopLaunchers()
-	code = Run(context.Background(), append([]string{"todo"}, args...),
+	code = Run(t.Context(), append([]string{"todo"}, args...),
 		strings.NewReader(""), &outBuf, &errBuf, cfg, tui, serve, hostLauncher)
 	return outBuf.String(), errBuf.String(), code
 }
@@ -397,7 +396,7 @@ func TestRemoteBackend_TUIRefusesToStartOnAnUnreachableHost(t *testing.T) {
 
 	var outBuf, errBuf bytes.Buffer
 	_, serve, hostLauncher := noopLaunchers()
-	code := Run(context.Background(), []string{"todo", "tui"},
+	code := Run(t.Context(), []string{"todo", "tui"},
 		strings.NewReader(""), &outBuf, &errBuf, cfg, tui.Run, serve, hostLauncher)
 
 	require.Equal(t, 1, code)
@@ -416,7 +415,7 @@ func TestBackendSelection_Precedence(t *testing.T) {
 	seed(t, cfg.DBPath, todo.Task{
 		Title: "this machine's own", Status: todo.StatusOpen, Priority: todo.PriorityNone,
 	})
-	_, err := h.Svc.AddTask(context.Background(), todo.NewTask{Title: "the host's"})
+	_, err := h.Svc.AddTask(t.Context(), todo.NewTask{Title: "the host's"})
 	require.NoError(t, err, "seed the host")
 
 	t.Run("the file alone chooses the host", func(t *testing.T) {

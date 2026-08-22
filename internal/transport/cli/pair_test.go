@@ -51,7 +51,7 @@ func runAtHome(t *testing.T, home string, args ...string) (stdout, stderr string
 
 	var outBuf, errBuf bytes.Buffer
 	tui, serve, launch := noopLaunchers()
-	code = Run(context.Background(), append([]string{"todo"}, args...),
+	code = Run(t.Context(), append([]string{"todo"}, args...),
 		strings.NewReader(""), &outBuf, &errBuf, config.Config{}, tui, serve, launch)
 	return outBuf.String(), errBuf.String(), code
 }
@@ -63,7 +63,7 @@ func startHostPair(t *testing.T, home string) (code string, stdout *syncBuffer, 
 	t.Helper()
 	t.Setenv("HOME", home)
 
-	ctx, cancelCtx := context.WithCancel(context.Background())
+	ctx, cancelCtx := context.WithCancel(t.Context())
 	out, errOut := &syncBuffer{}, &syncBuffer{}
 	done := make(chan int, 1)
 
@@ -158,7 +158,7 @@ func pairedHost(t *testing.T, home string) (url, code string) {
 	dir := filepath.Join(home, ".todo")
 	require.NoError(t, os.MkdirAll(dir, 0o700))
 
-	repo, err := repository.Open(context.Background(), filepath.Join(t.TempDir(), "host.db"))
+	repo, err := repository.Open(t.Context(), filepath.Join(t.TempDir(), "host.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { repo.Close() })
 
@@ -261,6 +261,39 @@ func TestPair_ReportsAHostItCannotReach(t *testing.T) {
 	assert.Equal(t, 1, exit)
 	assert.Contains(t, stderr, "cannot reach the todo host at "+url,
 		"an unreachable host must not read as a rejected code")
+}
+
+// The command a device is told to run has to be one that can work. The README
+// recommends a wildcard listen address for exactly the case pairing exists for
+// — a host other machines reach — and that is the one address no other machine
+// can connect to.
+func TestPairTarget(t *testing.T) {
+	tests := []struct {
+		name     string
+		addr     string
+		want     string
+		wantNote bool
+	}{
+		{name: "loopback", addr: "127.0.0.1:8090", want: "http://127.0.0.1:8090"},
+		{name: "a reachable address", addr: "192.168.1.10:8090", want: "http://192.168.1.10:8090"},
+		{name: "every interface", addr: "0.0.0.0:8090", want: "http://<this host's address>:8090", wantNote: true},
+		{name: "a bare port", addr: ":8090", want: "http://<this host's address>:8090", wantNote: true},
+		{name: "every interface, v6", addr: "[::]:8090", want: "http://<this host's address>:8090", wantNote: true},
+		{name: "a v6 address", addr: "[fd00::1]:8090", want: "http://[fd00::1]:8090"},
+		{name: "not an address at all", addr: "nonsense", want: "http://nonsense"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target, note := pairTarget(tt.addr)
+			assert.Equal(t, tt.want, target)
+			assert.NotContains(t, target, "0.0.0.0", "an address nothing can connect to must not be printed as a URL")
+			if tt.wantNote {
+				assert.NotEmpty(t, note, "a placeholder must come with the instruction to replace it")
+			} else {
+				assert.Empty(t, note)
+			}
+		})
+	}
 }
 
 func TestNormalizeHostURL(t *testing.T) {

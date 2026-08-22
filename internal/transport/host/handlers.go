@@ -71,44 +71,6 @@ func wrap(h http.Handler, mw []Middleware) http.Handler {
 	return h
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func badRequest(w http.ResponseWriter, msg string) {
-	writeJSON(w, http.StatusBadRequest, errorBody{Error: msg})
-}
-
-// writeError maps the domain's error vocabulary onto status codes: ErrNotFound
-// to 404, a rejected field to 400, and a stale version to 409. Each carries the
-// structured fields a client needs to rebuild the same error on its side.
-func writeError(w http.ResponseWriter, err error) {
-	var cerr *todo.ConflictError
-	if errors.As(err, &cerr) {
-		writeJSON(w, http.StatusConflict, errorBody{
-			Error:    cerr.Error(),
-			Conflict: &conflictBody{TaskID: cerr.TaskID, Expected: cerr.Expected, Actual: cerr.Actual},
-		})
-		return
-	}
-	var verr *todo.ValidationError
-	if errors.As(err, &verr) {
-		writeJSON(w, http.StatusBadRequest, errorBody{Error: verr.Error(), Field: verr.Field, Message: verr.Message})
-		return
-	}
-	status := http.StatusInternalServerError
-	if errors.Is(err, todo.ErrNotFound) {
-		status = http.StatusNotFound
-	}
-	writeJSON(w, status, errorBody{Error: err.Error()})
-}
-
-func pathID(r *http.Request) (int64, error) {
-	return strconv.ParseInt(r.PathValue("id"), 10, 64)
-}
-
 // listTasks serves the whole TaskFilter vocabulary. It goes through the
 // Service like every other verb, so the sort and the Subtask grouping a local
 // caller gets are the same ones a remote caller gets.
@@ -186,6 +148,16 @@ func parseDateParam(q url.Values, key string) (*time.Time, error) {
 	return &d, nil
 }
 
+// createTask creates the task in the state the request asked for, in one
+// request, because the client's repository adapter must not have to follow a
+// create it cannot retry with a second write that can fail on its own.
+//
+// It still goes through the Service twice — AddTask, then UpdateTask for a
+// status other than the one a task opens in — because the host has no other
+// way in and the lifecycle rules that stamp CompletedAt live there. Two calls
+// are safe here where two HTTP requests are not: nothing is written to the
+// response between them, so the client sees either the created task or an
+// error, never a task it was told did not exist.
 func createTask(svc *todo.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req createRequest
@@ -214,8 +186,32 @@ func createTask(svc *todo.Service) http.HandlerFunc {
 			writeError(w, err)
 			return
 		}
+		if t, err = openIn(r, svc, t, todo.Status(req.Status)); err != nil {
+			writeError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusCreated, toDTO(t))
 	}
+}
+
+// openIn moves a freshly created task to the status the request asked for,
+// and is a no-op for the status the Service already opened it in.
+//
+// A rejected status undoes the create rather than leaving a task nobody asked
+// for behind: the request answers with an error, so the task it half-made must
+// not survive it. The delete cannot be observed as a separate step — no reply
+// has been written yet — which is exactly what makes this compensation sound
+// here and unsound across a network.
+func openIn(r *http.Request, svc *todo.Service, t todo.Task, status todo.Status) (todo.Task, error) {
+	if status == "" || status == t.Status {
+		return t, nil
+	}
+	updated, err := svc.UpdateTask(r.Context(), t.ID, todo.TaskPatch{Status: todo.Set(status)})
+	if err != nil {
+		svc.DeleteTask(r.Context(), t.ID) //nolint:errcheck // the request is failing either way; a stranded task is the worse of the two
+		return todo.Task{}, err
+	}
+	return updated, nil
 }
 
 func getTask(svc *todo.Service) http.HandlerFunc {
@@ -356,4 +352,45 @@ func deleteTask(svc *todo.Service) http.HandlerFunc {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+// The four helpers below sit at the bottom because every handler above reaches
+// one of them, and a helper with that many callers belongs to none of them.
+
+func pathID(r *http.Request) (int64, error) {
+	return strconv.ParseInt(r.PathValue("id"), 10, 64)
+}
+
+func badRequest(w http.ResponseWriter, msg string) {
+	writeJSON(w, http.StatusBadRequest, errorBody{Error: msg})
+}
+
+// writeError maps the domain's error vocabulary onto status codes: ErrNotFound
+// to 404, a rejected field to 400, and a stale version to 409. Each carries the
+// structured fields a client needs to rebuild the same error on its side.
+func writeError(w http.ResponseWriter, err error) {
+	var cerr *todo.ConflictError
+	if errors.As(err, &cerr) {
+		writeJSON(w, http.StatusConflict, errorBody{
+			Error:    cerr.Error(),
+			Conflict: &conflictBody{TaskID: cerr.TaskID, Expected: cerr.Expected, Actual: cerr.Actual},
+		})
+		return
+	}
+	var verr *todo.ValidationError
+	if errors.As(err, &verr) {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: verr.Error(), Field: verr.Field, Message: verr.Message})
+		return
+	}
+	status := http.StatusInternalServerError
+	if errors.Is(err, todo.ErrNotFound) {
+		status = http.StatusNotFound
+	}
+	writeJSON(w, status, errorBody{Error: err.Error()})
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
 }

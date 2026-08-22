@@ -13,7 +13,6 @@ import (
 	"crypto/rand"
 	"fmt"
 	"strings"
-	"sync"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -113,26 +112,25 @@ func (c Credential) Verify(secret string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(c.SecretHash), []byte(secret)) == nil
 }
 
-// VerifyAbsent does the work Verify does — the same function, the same work
-// factor — against the hash of a secret nobody was ever given, and so always
-// reports false.
+// Absent returns a credential for a secret that was generated, hashed, and
+// discarded unread, so that verifying anything against it does the work Verify
+// does — the same function, the same work factor — and always reports false.
 //
-// An unknown id must cost what a known one costs. Skipping the hash when the
-// lookup misses would make "no such device" the fast answer and turn the host
-// into an oracle for which ids are registered, which is the one thing a device
-// id is not allowed to leak.
-func VerifyAbsent(secret string) bool {
-	return absent().Verify(secret)
-}
-
-// absent is a credential for a secret that was generated, hashed, and
-// discarded unread, so nothing can satisfy it. It is computed once and lazily:
-// once because it is a constant, lazily so that a host that never sees an
-// unknown id never pays for it, and generated rather than written into the
-// source so that no two installations share it.
-var absent = sync.OnceValue(func() Credential {
+// An unknown id must cost what a known one costs, from the first request
+// onwards. Skipping the hash when the lookup misses would make "no such
+// device" the fast answer and turn the host into an oracle for which ids are
+// registered, which is the one thing a device id is not allowed to leak;
+// hashing on the first miss instead would make that one request the slowest
+// answer the host ever gives, which is the same oracle read the other way
+// round. So the caller that authenticates builds this once, while it is
+// assembling its handler, and keeps it: by the time any request arrives the
+// work is already done.
+//
+// It is generated rather than written into the source, so that no two
+// installations share it.
+func Absent() Credential {
 	// GenerateFromPassword fails only on an out-of-range cost, and cost is a
 	// constant this package owns. An empty hash would still verify to false.
 	hash, _ := bcrypt.GenerateFromPassword([]byte(rand.Text()), DefaultCost)
 	return Credential{SecretHash: string(hash)}
-})
+}

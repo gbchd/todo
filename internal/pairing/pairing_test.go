@@ -110,10 +110,13 @@ func TestRedeem_FailsOnceTheWindowHasClosed(t *testing.T) {
 // ever arrived to notice, which is what lets `todo host pair` stop waiting.
 func TestOutcome_ReportsExpiryWithoutAnyRequest(t *testing.T) {
 	store := NewStore(t.TempDir(), nil)
-	require.NoError(t, store.Open("ABC123", 40*time.Millisecond))
+	clock := time.Now()
+	store.now = func() time.Time { return clock }
+
+	require.NoError(t, store.Open("ABC123", Window))
 	assert.Equal(t, StateOpen, store.Outcome().State)
 
-	time.Sleep(60 * time.Millisecond)
+	clock = clock.Add(Window + time.Second)
 	assert.Equal(t, StateExpired, store.Outcome().State)
 }
 

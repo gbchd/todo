@@ -3,6 +3,7 @@ package remote
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"time"
@@ -121,12 +122,20 @@ func toTasks(dtos []taskDTO) ([]todo.Task, error) {
 	return out, nil
 }
 
-// createBody is the POST body: only the fields a caller may choose. Status,
-// the timestamps and the version are the host's, and have nowhere to arrive
-// here for the same reason they are read-only on a PATCH.
+// createBody is the POST body: only the fields a caller may choose. The
+// timestamps and the version are the host's, and have nowhere to arrive here
+// for the same reason they are read-only on a PATCH.
+//
+// Status is here so that Create is one write. The Service only ever creates
+// open tasks, but the port does not promise that, and a task handed in already
+// done has to reach the host in the request that creates it — the alternative,
+// a POST followed by a PATCH, fails by telling the caller a task it did create
+// was not created. CompletedAt is still absent: it follows from the status,
+// and the host stamps it.
 type createBody struct {
 	Title       string  `json:"title"`
 	Description string  `json:"description"`
+	Status      string  `json:"status"`
 	Priority    string  `json:"priority"`
 	DueDate     *string `json:"due_date"`
 	ParentID    *int64  `json:"parent_id"`
@@ -136,6 +145,7 @@ func toCreateBody(t todo.Task) createBody {
 	return createBody{
 		Title:       t.Title,
 		Description: t.Description,
+		Status:      string(t.Status),
 		Priority:    string(t.Priority),
 		DueDate:     formatDate(t.DueDate),
 		ParentID:    t.ParentID,
@@ -251,7 +261,7 @@ func toDomainError(status int, body errorBody) error {
 	if body.Field != "" {
 		return &todo.ValidationError{Field: body.Field, Message: body.Message}
 	}
-	if status == 404 {
+	if status == http.StatusNotFound {
 		return fmt.Errorf("%s: %w", body.Error, todo.ErrNotFound)
 	}
 	return errors.New(body.Error)
