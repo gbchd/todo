@@ -15,18 +15,59 @@ import (
 
 func newTestModel(t *testing.T, layout layoutKind) model {
 	t.Helper()
+	m, _ := newCountedModel(t, layout)
+	return m
+}
+
+// newCountedModel is newTestModel with the call counter exposed, for the tests
+// that assert on how much the TUI talks to the repository.
+func newCountedModel(t *testing.T, layout layoutKind) (model, *countingRepository) {
+	t.Helper()
 	ctx := context.Background()
 	repo, err := repository.Open(ctx, filepath.Join(t.TempDir(), "todo.db"))
 	require.NoError(t, err, "open repo")
 	t.Cleanup(func() { repo.Close() })
-	svc := todo.NewService(repo)
+	counted := &countingRepository{inner: repo}
+	svc := todo.NewService(counted)
 
 	_, err = svc.AddTask(ctx, todo.NewTask{Title: "first task", Priority: todo.PriorityHigh})
 	require.NoError(t, err, "seed")
 	_, err = svc.AddTask(ctx, todo.NewTask{Title: "second task"})
 	require.NoError(t, err, "seed")
 
-	return newModel(ctx, svc, layout)
+	return newModel(ctx, svc, layout), counted
+}
+
+// countingRepository tallies every call reaching the repository, so a test can
+// assert that a keystroke made none.
+type countingRepository struct {
+	inner todo.TaskRepository
+	calls int
+}
+
+func (r *countingRepository) Create(ctx context.Context, t todo.Task) (todo.Task, error) {
+	r.calls++
+	return r.inner.Create(ctx, t)
+}
+
+func (r *countingRepository) Get(ctx context.Context, id int64) (todo.Task, error) {
+	r.calls++
+	return r.inner.Get(ctx, id)
+}
+
+func (r *countingRepository) UpdateWith(ctx context.Context, id int64, mutate func(todo.Task) (todo.Task, error)) (todo.Task, error) {
+	r.calls++
+	return r.inner.UpdateWith(ctx, id, mutate)
+}
+
+func (r *countingRepository) Delete(ctx context.Context, id int64) error {
+	r.calls++
+	return r.inner.Delete(ctx, id)
+}
+
+func (r *countingRepository) List(ctx context.Context, filter todo.TaskFilter) ([]todo.Task, error) {
+	r.calls++
+	return r.inner.List(ctx, filter)
 }
 
 func key(s string) tea.KeyMsg {
@@ -323,5 +364,36 @@ func TestParseLayout(t *testing.T) {
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, ParseLayout(in), "ParseLayout(%q)", in)
+	}
+}
+
+// Browsing must never be gated on a per-keystroke query: the selection's
+// Subtasks are grouped from the list response already in memory, so a cursor
+// move touches the repository in no layout.
+func TestModel_CursorMoveIssuesNoQuery(t *testing.T) {
+	layouts := []struct {
+		name   string
+		layout layoutKind
+		keys   []string
+	}{
+		{"list", layoutList, []string{"down", "down", "up"}},
+		{"split", layoutSplit, []string{"down", "down", "up"}},
+		{"kanban", layoutKanban, []string{"down", "up", "right", "left"}},
+	}
+	for _, tc := range layouts {
+		t.Run(tc.name, func(t *testing.T) {
+			m, repo := newCountedModel(t, tc.layout)
+			// A parent with a Subtask, revealed: the case that used to fetch
+			// children whenever the cursor landed on the parent.
+			m = addSubtaskToFirstTask(t, m)
+			m = send(t, m, "esc", "s")
+
+			before := repo.calls
+			m = send(t, m, tc.keys...)
+
+			assert.Equal(t, before, repo.calls, "cursor moves must issue no repository call")
+			_, ok := m.selectedTask()
+			assert.True(t, ok, "a task must still be selected")
+		})
 	}
 }
