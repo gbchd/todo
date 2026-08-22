@@ -13,7 +13,15 @@ import (
 //
 // A domain error — ErrNotFound, *ValidationError, *ConflictError — never
 // arrives wrapped in one of these: the host raised it, and a caller must not
-// be able to tell that it crossed a network on the way back.
+// be able to tell that it crossed a network on the way back. *ConflictError is
+// the fourth failure a paired device has to be able to name — another device
+// got there first — and it deliberately stays a domain error, because it means
+// the same thing and takes the same fix whether the race happened across a
+// network or inside one SQLite transaction.
+//
+// Each of the three names the host in its message. The machine that has to be
+// fixed is usually not the machine the command was typed on, and a user with
+// two hosts in two shells has nothing else to tell the two answers apart by.
 var (
 	// ErrUnreachable means the request never got an answer: the host is down,
 	// the address is wrong, the network dropped it, or the timeout expired.
@@ -28,9 +36,18 @@ var (
 	ErrProtocolMismatch = errors.New("this todo and the host do not speak the same protocol")
 )
 
-// unreachable wraps a transport-level failure. The host URL is in the message
-// because the machine running this command is usually not the machine that
-// needs fixing.
+// unreachable wraps a transport-level failure.
 func (r *Repository) unreachable(err error) error {
 	return fmt.Errorf("%w at %s: %w", ErrUnreachable, r.baseURL, err)
+}
+
+// rejected wraps the host's own words about a credential it would not accept.
+func (r *Repository) rejected(said string) error {
+	return fmt.Errorf("%w at %s: %s", ErrUnauthenticated, r.baseURL, said)
+}
+
+// mismatch wraps a disagreement about the protocol, carrying the host's words
+// where it had any.
+func (r *Repository) mismatch(said string) error {
+	return fmt.Errorf("%w: %s said: %s", ErrProtocolMismatch, r.baseURL, said)
 }

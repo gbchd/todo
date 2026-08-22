@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -370,4 +371,101 @@ func TestUpdateWith_LeavesCompletedAtAloneOnAnUnrelatedEdit(t *testing.T) {
 	require.NotNil(t, edited.CompletedAt)
 	assert.True(t, edited.CompletedAt.Equal(*done.CompletedAt),
 		"CompletedAt = %v, want the original %v", edited.CompletedAt, done.CompletedAt)
+}
+
+// classify names which of the four failures err is, by the same test every
+// interface above the port uses: three sentinels and one domain type. It
+// returns "" for anything that is none of them, so a case that quietly becomes
+// a plain error fails loudly rather than matching by accident.
+func classify(err error) string {
+	switch {
+	case errors.Is(err, ErrUnreachable):
+		return "unreachable"
+	case errors.Is(err, ErrUnauthenticated):
+		return "rejected credential"
+	case errors.Is(err, ErrProtocolMismatch):
+		return "protocol mismatch"
+	case isConflict(err):
+		return "conflict"
+	}
+	return ""
+}
+
+// TestTheFourFailuresAreDistinguishable puts this adapter's whole error
+// vocabulary in one table. Each of the four has its fix somewhere else — the
+// network, the pairing, the installed version, the other device — so a caller
+// must be able to tell any one of them from the other three, and the failure
+// this test is written to catch is a change that collapses two of them into
+// one. The three that belong to the wire also have to name the host, because
+// the machine that needs fixing is not the machine reading the message.
+func TestTheFourFailuresAreDistinguishable(t *testing.T) {
+	tests := []struct {
+		name     string
+		want     string
+		namesURL bool
+		fail     func(t *testing.T) (url string, err error)
+	}{
+		{
+			name: "nothing is listening", want: "unreachable", namesURL: true,
+			fail: func(t *testing.T) (string, error) {
+				dead := httptest.NewServer(http.NotFoundHandler())
+				url := dead.URL
+				dead.Close()
+				_, err := New(url, "id.secret").List(t.Context(), todo.TaskFilter{})
+				return url, err
+			},
+		},
+		{
+			name: "the host does not know this device", want: "rejected credential", namesURL: true,
+			fail: func(t *testing.T) (string, error) {
+				h := hosttest.StartFresh(t)
+				_, err := New(h.URL, "someone-else.revoked").List(t.Context(), todo.TaskFilter{})
+				return h.URL, err
+			},
+		},
+		{
+			name: "the two builds disagree", want: "protocol mismatch", namesURL: true,
+			fail: func(t *testing.T) (string, error) {
+				mangle := func(next http.Handler) http.Handler {
+					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						r.Header.Set(host.ProtocolVersionHeader, "99")
+						next.ServeHTTP(w, r)
+					})
+				}
+				srv := httptest.NewServer(mangle(host.NewMux(hosttest.NewService(t), nil, host.RequireProtocolVersion)))
+				t.Cleanup(srv.Close)
+				_, err := New(srv.URL, "id.secret").List(t.Context(), todo.TaskFilter{})
+				return srv.URL, err
+			},
+		},
+		{
+			name: "another device got there first", want: "conflict",
+			fail: func(t *testing.T) (string, error) {
+				race := &interference{method: http.MethodPatch}
+				h := hosttest.StartFresh(t, race.middleware)
+				repo := New(h.URL, h.Token)
+				task := seedTask(t, repo, "contended")
+				race.before = func(w http.ResponseWriter, _ *http.Request, _ int64) bool {
+					answerConflict(w, task.ID)
+					return true
+				}
+				_, err := repo.UpdateWith(t.Context(), task.ID, func(got todo.Task) (todo.Task, error) {
+					got.Title = "mine"
+					return got, nil
+				})
+				return h.URL, err
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			url, err := tc.fail(t)
+			require.Error(t, err)
+			assert.Equal(t, tc.want, classify(err), "err=%v", err)
+			if tc.namesURL {
+				assert.Contains(t, err.Error(), url, "the message must name the host")
+			}
+		})
+	}
 }
