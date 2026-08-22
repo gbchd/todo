@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,7 +17,9 @@ import (
 
 	"github.com/gbchd/todo/internal/config"
 	"github.com/gbchd/todo/internal/service/todo"
+	"github.com/gbchd/todo/internal/transport/host"
 	"github.com/gbchd/todo/internal/transport/host/hosttest"
+	"github.com/gbchd/todo/internal/transport/tui"
 )
 
 // startTestHost runs a real host in this process and returns the config a
@@ -281,4 +284,162 @@ func TestRemoteBackend_OutputMatchesALocalInstall(t *testing.T) {
 
 	assert.Equal(t, transcript(local), transcript(remote),
 		"a remote client's transcript must be indistinguishable from a local one")
+}
+
+// remoteConfig is the config a device paired with url would have.
+func remoteConfig(t *testing.T, url, secret string) config.Config {
+	t.Helper()
+	return config.Config{
+		DBPath:  filepath.Join(t.TempDir(), "client-local.db"),
+		Backend: config.Backend{Kind: config.BackendRemote, HostURL: url, Secret: secret},
+	}
+}
+
+// TestRemoteBackend_EachFailureSaysWhichOneItIs walks the four things that can
+// go wrong on a paired device through the CLI, which is where a user meets
+// them. Each has its fix in a different place, so each has to arrive named and
+// with the next step in it — and none of them may leave a database behind on a
+// machine that is supposed to keep nothing.
+func TestRemoteBackend_EachFailureSaysWhichOneItIs(t *testing.T) {
+	tests := []struct {
+		name string
+		want []string
+		args []string
+		cfg  func(t *testing.T) config.Config
+	}{
+		{
+			name: "the host is unreachable",
+			args: []string{"list"},
+			want: []string{"cannot reach the todo host", "--local"},
+			cfg: func(t *testing.T) config.Config {
+				dead := httptest.NewServer(http.NotFoundHandler())
+				url := dead.URL
+				dead.Close()
+				return remoteConfig(t, url, "id.secret")
+			},
+		},
+		{
+			name: "the credential was rejected",
+			args: []string{"list"},
+			want: []string{"rejected this device's credential", "todo pair"},
+			cfg: func(t *testing.T) config.Config {
+				return remoteConfig(t, hosttest.StartFresh(t).URL, "someone-else.revoked")
+			},
+		},
+		{
+			name: "the two builds disagree",
+			args: []string{"list"},
+			want: []string{"do not speak the same protocol", "upgrade todo"},
+			cfg: func(t *testing.T) config.Config {
+				mangle := func(next http.Handler) http.Handler {
+					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						r.Header.Set(host.ProtocolVersionHeader, "99")
+						next.ServeHTTP(w, r)
+					})
+				}
+				srv := httptest.NewServer(mangle(host.NewMux(hosttest.NewService(t), nil, host.RequireProtocolVersion)))
+				t.Cleanup(srv.Close)
+				return remoteConfig(t, srv.URL, "id.secret")
+			},
+		},
+		{
+			name: "another device got there first",
+			args: []string{"done", "1"},
+			want: []string{"task #1 changed while this command was working on it", "run the command again"},
+			cfg: func(t *testing.T) config.Config {
+				// Every write is refused as a lost version race, which is what
+				// a task being edited from another device continuously looks
+				// like from here: the adapter retries, runs out of retries,
+				// and the conflict is the user's to see.
+				conflict := func(next http.Handler) http.Handler {
+					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.Method != http.MethodPatch {
+							next.ServeHTTP(w, r)
+							return
+						}
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusConflict)
+						fmt.Fprint(w, `{"error":"conflict","conflict":{"task_id":1,"expected_version":1,"actual_version":99}}`)
+					})
+				}
+				h := hosttest.StartFresh(t, conflict)
+				cfg := remoteConfig(t, h.URL, h.Token)
+				_, _, code := runWith(t, cfg, "add", "contended")
+				require.Equal(t, 0, code, "seed")
+				return cfg
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.cfg(t)
+			_, stderr, code := runWith(t, cfg, tc.args...)
+
+			require.Equal(t, 1, code, "a failure must exit non-zero; stderr=%s", stderr)
+			for _, want := range tc.want {
+				assert.Contains(t, stderr, want)
+			}
+			assert.NoFileExists(t, cfg.DBPath, "a failed remote command must not fall back to a local file")
+		})
+	}
+}
+
+// TestRemoteBackend_TUIRefusesToStartOnAnUnreachableHost drives the real TUI
+// launcher, not a stub: `todo tui` against a host that does not answer must
+// come back to the shell the way `todo list` does, rather than opening an
+// empty screen the user then has to quit.
+func TestRemoteBackend_TUIRefusesToStartOnAnUnreachableHost(t *testing.T) {
+	dead := httptest.NewServer(http.NotFoundHandler())
+	url := dead.URL
+	dead.Close()
+	cfg := remoteConfig(t, url, "id.secret")
+
+	var outBuf, errBuf bytes.Buffer
+	_, serve, hostLauncher := noopLaunchers()
+	code := Run(context.Background(), []string{"todo", "tui"},
+		strings.NewReader(""), &outBuf, &errBuf, cfg, tui.Run, serve, hostLauncher)
+
+	require.Equal(t, 1, code)
+	assert.Contains(t, errBuf.String(), url, "the message must name the host, as `todo list` does")
+	assert.Contains(t, errBuf.String(), "cannot reach the todo host")
+}
+
+// TestBackendSelection_Precedence pins the whole order in one place: the file
+// says what this machine is, the environment may replace the secret it says so
+// with, and --local overrides the decision entirely for one command. Each
+// source is checked while the wider one says something different, so the test
+// cannot pass by consulting only one of them.
+func TestBackendSelection_Precedence(t *testing.T) {
+	h := hosttest.StartFresh(t)
+	cfg := remoteConfig(t, h.URL, "stale-in-the-file")
+	seed(t, cfg.DBPath, todo.Task{
+		Title: "this machine's own", Status: todo.StatusOpen, Priority: todo.PriorityNone,
+	})
+	_, err := h.Svc.AddTask(context.Background(), todo.NewTask{Title: "the host's"})
+	require.NoError(t, err, "seed the host")
+
+	t.Run("the file alone chooses the host", func(t *testing.T) {
+		withFileSecret := cfg
+		withFileSecret.Backend.Secret = h.Token
+		stdout, stderr, code := runWith(t, withFileSecret, "list")
+		require.Equal(t, 0, code, "stderr=%s", stderr)
+		assert.Contains(t, stdout, "the host's")
+		assert.NotContains(t, stdout, "this machine's own")
+	})
+
+	t.Run("the environment replaces the file's secret", func(t *testing.T) {
+		t.Setenv(config.SecretEnv, h.Token)
+		stdout, stderr, code := runWith(t, cfg, "list")
+		require.Equal(t, 0, code, "the stale secret in the file must not have been used; stderr=%s", stderr)
+		assert.Contains(t, stdout, "the host's")
+	})
+
+	t.Run("--local overrides both", func(t *testing.T) {
+		t.Setenv(config.SecretEnv, h.Token)
+		stdout, stderr, code := runWith(t, cfg, "--local", "list")
+		require.Equal(t, 0, code, "stderr=%s", stderr)
+		assert.Contains(t, stdout, "this machine's own")
+		assert.NotContains(t, stdout, "the host's")
+	})
 }
