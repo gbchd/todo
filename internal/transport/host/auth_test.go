@@ -225,7 +225,7 @@ func TestProtocolVersion_IsCheckedBeforeTheCredential(t *testing.T) {
 func TestGuardedMux_StillMapsDomainErrorsOntoDistinctStatusCodes(t *testing.T) {
 	cred, token := issue(t)
 	svc := newTestService(t, filepath.Join(t.TempDir(), "todo.db"))
-	mux := NewMux(svc, RequireProtocolVersion, Authenticate(registered(cred)))
+	mux := NewMux(svc, nil, RequireProtocolVersion, Authenticate(registered(cred)))
 
 	do := func(method, path string, body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequestWithContext(context.Background(), method, path, strings.NewReader(body))

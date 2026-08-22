@@ -19,7 +19,7 @@ import (
 
 func newTestMux(t *testing.T, mw ...Middleware) http.Handler {
 	t.Helper()
-	return NewMux(newTestService(t, filepath.Join(t.TempDir(), "todo.db")), mw...)
+	return NewMux(newTestService(t, filepath.Join(t.TempDir(), "todo.db")), nil, mw...)
 }
 
 func newTestService(t *testing.T, dbPath string) *todo.Service {
@@ -388,7 +388,7 @@ func TestMiddlewareWrapsEveryTaskRoute(t *testing.T) {
 // client reads and writes the same file while the host is serving from it.
 func TestColocatedLocalClientSharesTheDatabase(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "todo.db")
-	mux := NewMux(newTestService(t, dbPath))
+	mux := NewMux(newTestService(t, dbPath), nil)
 	local := newTestService(t, dbPath)
 
 	created := createTaskViaAPI(t, mux, map[string]any{"title": "added over HTTP"})

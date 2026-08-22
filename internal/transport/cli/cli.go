@@ -17,6 +17,7 @@ import (
 
 	"github.com/gbchd/todo/internal/config"
 	"github.com/gbchd/todo/internal/credential"
+	"github.com/gbchd/todo/internal/pairing"
 	"github.com/gbchd/todo/internal/repository"
 	"github.com/gbchd/todo/internal/service/todo"
 )
@@ -37,8 +38,9 @@ type TUILauncher func(ctx context.Context, svc *todo.Service, layout string, std
 type ServeLauncher func(ctx context.Context, svc *todo.Service, addr string, stdout io.Writer) error
 
 // HostLauncher starts the host adapter; wired to internal/transport/host.Run.
-// creds is how the host resolves the device a request's token names.
-type HostLauncher func(ctx context.Context, svc *todo.Service, addr string, creds credential.Source, stdout io.Writer) error
+// creds is how the host resolves the device a request's token names, and pairs
+// is the outstanding pairing offer `todo host pair` opens in another process.
+type HostLauncher func(ctx context.Context, svc *todo.Service, addr string, creds credential.Source, pairs *pairing.Store, stdout io.Writer) error
 
 // Run parses args and executes the matching todo subcommand, returning the
 // process exit code. urfave/cli is the single parser for --db: the root
@@ -90,10 +92,12 @@ func buildRoot(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout
 		},
 		ExitErrHandler: func(context.Context, *tcli.Command, error) {},
 		Before: func(ctx context.Context, cmd *tcli.Command) (context.Context, error) {
-			// `todo host` owns a different database — the one named in
-			// host.toml — and opens it itself. Opening the client's here would
-			// create a stray empty todo.db on a machine that only hosts.
-			if cmd.Args().First() == hostCommandName {
+			// Two commands are not about this machine's own task list, and
+			// opening the client's database for them would leave a stray empty
+			// todo.db behind: `todo host` owns a different database — the one
+			// named in host.toml — and opens it itself, and `todo pair` runs on
+			// a device that is about to stop having a local database at all.
+			if needsNoRepository(cmd.Args().First()) {
 				return ctx, nil
 			}
 			r, err := repository.Open(ctx, cmd.String("db"))
@@ -123,8 +127,15 @@ func buildRoot(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout
 			tuiCommand(holder, cfg, stdin, stdout, runTUI),
 			serveCommand(holder, cfg, stdout, runServe),
 			hostCommand(stdout, stderr, runHost),
+			pairCommand(stdout, stderr),
 		},
 	}
+}
+
+// needsNoRepository reports whether a subcommand runs without the client's
+// task database.
+func needsNoRepository(name string) bool {
+	return name == hostCommandName || name == pairCommandName
 }
 
 func addCommand(holder *serviceHolder, stdout, stderr io.Writer) *tcli.Command {
@@ -449,10 +460,9 @@ const hostCommandName = "host"
 // are validated before anything is opened or bound — a refusal to listen must
 // not first create a database.
 //
-// `todo host clients` and `todo host revoke` mount here as subcommands, and
-// `todo host pair` joins them once pairing exists. They manage the same file
-// this action reads, which is why none of them takes a path: host.toml is the
-// host's, singular.
+// `todo host pair`, `todo host clients` and `todo host revoke` mount here as
+// subcommands. They manage the same file this action reads, which is why none
+// of them takes a path: host.toml is the host's, singular.
 func hostCommand(stdout, stderr io.Writer, runHost HostLauncher) *tcli.Command {
 	return &tcli.Command{
 		Name:  hostCommandName,
@@ -462,6 +472,7 @@ func hostCommand(stdout, stderr io.Writer, runHost HostLauncher) *tcli.Command {
 			&tcli.StringFlag{Name: "db", Usage: "path to the SQLite database the host owns"},
 		},
 		Commands: []*tcli.Command{
+			hostPairCommand(stdout, stderr),
 			hostClientsCommand(stdout, stderr),
 			hostRevokeCommand(stdout, stderr),
 		},
@@ -486,7 +497,15 @@ func hostCommand(stdout, stderr io.Writer, runHost HostLauncher) *tcli.Command {
 			}
 			defer repo.Close()
 
-			return runHost(ctx, todo.NewService(repo), hostCfg.ListenAddr, hostCredentials, stdout)
+			dir, err := config.Dir()
+			if err != nil {
+				return reportErr(stderr, err, 0)
+			}
+			// The store is read per request, so a code `todo host pair` opens
+			// minutes after the host started is still seen by it.
+			pairs := pairing.NewStore(dir, registerDevice)
+
+			return runHost(ctx, todo.NewService(repo), hostCfg.ListenAddr, hostCredentials, pairs, stdout)
 		},
 	}
 }
