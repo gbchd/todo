@@ -71,44 +71,6 @@ func wrap(h http.Handler, mw []Middleware) http.Handler {
 	return h
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func badRequest(w http.ResponseWriter, msg string) {
-	writeJSON(w, http.StatusBadRequest, errorBody{Error: msg})
-}
-
-// writeError maps the domain's error vocabulary onto status codes: ErrNotFound
-// to 404, a rejected field to 400, and a stale version to 409. Each carries the
-// structured fields a client needs to rebuild the same error on its side.
-func writeError(w http.ResponseWriter, err error) {
-	var cerr *todo.ConflictError
-	if errors.As(err, &cerr) {
-		writeJSON(w, http.StatusConflict, errorBody{
-			Error:    cerr.Error(),
-			Conflict: &conflictBody{TaskID: cerr.TaskID, Expected: cerr.Expected, Actual: cerr.Actual},
-		})
-		return
-	}
-	var verr *todo.ValidationError
-	if errors.As(err, &verr) {
-		writeJSON(w, http.StatusBadRequest, errorBody{Error: verr.Error(), Field: verr.Field, Message: verr.Message})
-		return
-	}
-	status := http.StatusInternalServerError
-	if errors.Is(err, todo.ErrNotFound) {
-		status = http.StatusNotFound
-	}
-	writeJSON(w, status, errorBody{Error: err.Error()})
-}
-
-func pathID(r *http.Request) (int64, error) {
-	return strconv.ParseInt(r.PathValue("id"), 10, 64)
-}
-
 // listTasks serves the whole TaskFilter vocabulary. It goes through the
 // Service like every other verb, so the sort and the Subtask grouping a local
 // caller gets are the same ones a remote caller gets.
@@ -390,4 +352,45 @@ func deleteTask(svc *todo.Service) http.HandlerFunc {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+// The four helpers below sit at the bottom because every handler above reaches
+// one of them, and a helper with that many callers belongs to none of them.
+
+func pathID(r *http.Request) (int64, error) {
+	return strconv.ParseInt(r.PathValue("id"), 10, 64)
+}
+
+func badRequest(w http.ResponseWriter, msg string) {
+	writeJSON(w, http.StatusBadRequest, errorBody{Error: msg})
+}
+
+// writeError maps the domain's error vocabulary onto status codes: ErrNotFound
+// to 404, a rejected field to 400, and a stale version to 409. Each carries the
+// structured fields a client needs to rebuild the same error on its side.
+func writeError(w http.ResponseWriter, err error) {
+	var cerr *todo.ConflictError
+	if errors.As(err, &cerr) {
+		writeJSON(w, http.StatusConflict, errorBody{
+			Error:    cerr.Error(),
+			Conflict: &conflictBody{TaskID: cerr.TaskID, Expected: cerr.Expected, Actual: cerr.Actual},
+		})
+		return
+	}
+	var verr *todo.ValidationError
+	if errors.As(err, &verr) {
+		writeJSON(w, http.StatusBadRequest, errorBody{Error: verr.Error(), Field: verr.Field, Message: verr.Message})
+		return
+	}
+	status := http.StatusInternalServerError
+	if errors.Is(err, todo.ErrNotFound) {
+		status = http.StatusNotFound
+	}
+	writeJSON(w, status, errorBody{Error: err.Error()})
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
 }
