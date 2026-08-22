@@ -1,78 +1,25 @@
 package remote
 
 import (
-	"context"
 	"net/http"
-	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/gbchd/todo/internal/credential"
-	"github.com/gbchd/todo/internal/repository"
 	"github.com/gbchd/todo/internal/service/todo"
 	"github.com/gbchd/todo/internal/service/todo/todotest"
 	"github.com/gbchd/todo/internal/transport/host"
+	"github.com/gbchd/todo/internal/transport/host/hosttest"
 )
 
-// hosted is an in-process `todo host`: a real mux, with the real protocol and
-// authentication middleware, over a real SQLite file in a temp directory.
-// Nothing about it is a stub — the only thing tests reach past is the network
-// itself, and httptest supplies that.
-type hosted struct {
-	URL   string
-	Token string
-	Svc   *todo.Service
-}
-
-// newHostService builds the Service a host serves, so that a test can also
-// write through it directly — which is how "another device wrote in between"
-// is staged.
-func newHostService(t *testing.T) *todo.Service {
-	t.Helper()
-	repo, err := repository.Open(context.Background(), filepath.Join(t.TempDir(), "todo.db"))
-	require.NoError(t, err, "open the host's database")
-	t.Cleanup(func() { repo.Close() })
-	return todo.NewService(repo)
-}
-
-// startHost serves svc over HTTP and registers one device, returning the
-// device's token. Extra middleware is mounted innermost, after the protocol
-// and credential checks, so a test can interfere with requests that have
-// already been accepted.
-//
-// The device's secret is hashed at bcrypt.MinCost. The contract suite makes
-// hundreds of authenticated requests and every one of them pays a full
-// password verification; at the production work factor that is minutes of
-// waiting for the same assertions. Only this test seam names a cost — see
-// credential.Issuer.
-func startHost(t *testing.T, svc *todo.Service, mw ...host.Middleware) hosted {
-	t.Helper()
-	cred, token, err := credential.Issuer{Cost: bcrypt.MinCost}.Issue()
-	require.NoError(t, err, "issue a device credential")
-
-	src := func(id string) (credential.Credential, bool) {
-		if id != cred.ID {
-			return credential.Credential{}, false
-		}
-		return cred, true
-	}
-
-	chain := append([]host.Middleware{host.RequireProtocolVersion, host.Authenticate(src)}, mw...)
-	srv := httptest.NewServer(host.NewMux(svc, nil, chain...))
-	t.Cleanup(srv.Close)
-
-	return hosted{URL: srv.URL, Token: token, Svc: svc}
-}
-
 // newHostedRepo is the whole remote stack in one call: adapter, network, host,
-// database.
-func newHostedRepo(t *testing.T, mw ...host.Middleware) (*Repository, hosted) {
+// database. Extra middleware is mounted inside the host's own, so a test can
+// interfere with requests that were already accepted.
+func newHostedRepo(t *testing.T, mw ...host.Middleware) (*Repository, hosttest.Hosted) {
 	t.Helper()
-	h := startHost(t, newHostService(t), mw...)
+	h := hosttest.StartFresh(t, mw...)
 	return New(h.URL, h.Token), h
 }
 
@@ -155,8 +102,7 @@ func TestRemoteRepository_WrongCredentialReachesTheHost(t *testing.T) {
 	}
 	// Mounted outermost of the test middleware but still inside the auth
 	// chain, so it counts only what authentication let through.
-	svc := newHostService(t)
-	h := startHost(t, svc, count)
+	h := hosttest.StartFresh(t, count)
 
 	id, _, ok := credential.SplitToken(h.Token)
 	require.True(t, ok)

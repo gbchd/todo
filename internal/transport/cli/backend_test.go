@@ -13,42 +13,20 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/gbchd/todo/internal/config"
-	"github.com/gbchd/todo/internal/credential"
-	"github.com/gbchd/todo/internal/repository"
 	"github.com/gbchd/todo/internal/service/todo"
-	"github.com/gbchd/todo/internal/transport/host"
+	"github.com/gbchd/todo/internal/transport/host/hosttest"
 )
 
-// startTestHost runs a real host — real mux, real protocol and credential
-// checks, real SQLite file — in this process, and returns the config a device
-// paired with it would have written.
+// startTestHost runs a real host in this process and returns the config a
+// device paired with it would have written.
 func startTestHost(t *testing.T) config.Config {
 	t.Helper()
-	repo, err := repository.Open(context.Background(), filepath.Join(t.TempDir(), "host.db"))
-	require.NoError(t, err)
-	t.Cleanup(func() { repo.Close() })
-
-	// bcrypt.MinCost, as everywhere a test authenticates repeatedly; see
-	// credential.Issuer.
-	cred, token, err := credential.Issuer{Cost: bcrypt.MinCost}.Issue()
-	require.NoError(t, err)
-	src := func(id string) (credential.Credential, bool) {
-		if id != cred.ID {
-			return credential.Credential{}, false
-		}
-		return cred, true
-	}
-
-	srv := httptest.NewServer(host.NewMux(
-		todo.NewService(repo), nil, host.RequireProtocolVersion, host.Authenticate(src)))
-	t.Cleanup(srv.Close)
-
+	h := hosttest.StartFresh(t)
 	return config.Config{
 		DBPath:  filepath.Join(t.TempDir(), "client-local.db"),
-		Backend: config.Backend{Kind: config.BackendRemote, HostURL: srv.URL, Secret: token},
+		Backend: config.Backend{Kind: config.BackendRemote, HostURL: h.URL, Secret: h.Token},
 	}
 }
 

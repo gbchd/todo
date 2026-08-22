@@ -14,6 +14,7 @@ import (
 
 	"github.com/gbchd/todo/internal/service/todo"
 	"github.com/gbchd/todo/internal/transport/host"
+	"github.com/gbchd/todo/internal/transport/host/hosttest"
 )
 
 // interference tallies requests of one HTTP method reaching the task API and
@@ -194,7 +195,7 @@ func TestRequestsCarryATimeout(t *testing.T) {
 		<-r.Context().Done()
 		return true
 	}
-	h := startHost(t, newHostService(t), stall.middleware)
+	h := hosttest.StartFresh(t, stall.middleware)
 	repo := New(h.URL, h.Token, WithTimeout(50*time.Millisecond))
 
 	start := time.Now()
@@ -234,7 +235,7 @@ func TestProtocolMismatch(t *testing.T) {
 		// Mounted outside the mux, so the protocol check sees a version this
 		// build would never send — which is what an older or newer todo on
 		// the other machine amounts to.
-		srv := httptest.NewServer(mangle(host.NewMux(newHostService(t), nil, host.RequireProtocolVersion)))
+		srv := httptest.NewServer(mangle(host.NewMux(hosttest.NewService(t), nil, host.RequireProtocolVersion)))
 		t.Cleanup(srv.Close)
 
 		_, err := New(srv.URL, "id.secret").List(t.Context(), todo.TaskFilter{})
