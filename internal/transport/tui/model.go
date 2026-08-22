@@ -55,7 +55,17 @@ type model struct {
 	layout layoutKind
 	mode   mode
 
+	// tasks holds the rows the current view renders: every Task when
+	// showSubtasks is on, top-level Tasks only when it is off. Both are
+	// derived from one unfiltered list response, so toggling and browsing
+	// never re-query.
 	tasks []todo.Task
+
+	// childrenByParent groups that same response's Subtasks under their
+	// Parent Task's id. It is what keeps a cursor move off the repository:
+	// the detail pane reads the selection's Subtasks from memory instead of
+	// issuing a ParentID query per keystroke.
+	childrenByParent map[int64][]todo.Task
 
 	// selectedID is the source of truth for what's selected — an identity,
 	// not a position. A reload or a status change can reorder or regroup
@@ -71,8 +81,7 @@ type model struct {
 
 	// showSubtasks is a viewing mode, not a preference: it resets on every
 	// launch rather than being persisted to config.
-	showSubtasks   bool
-	detailChildren []todo.Task
+	showSubtasks bool
 
 	form            form
 	pendingDeleteID int64
@@ -106,20 +115,20 @@ func (m *model) reload() {
 	}
 	fallbackIdx = max(fallbackIdx, 0)
 
-	filter := todo.TaskFilter{}
-	if !m.showSubtasks {
-		filter.ParentID = todo.Set[*int64](nil)
-	}
-	tasks, err := m.svc.ListTasks(m.ctx, filter)
+	// One unfiltered response feeds both the rows and the Subtask groups:
+	// the subtask toggle and the detail pane are then pure derivations of it,
+	// so neither costs a query. The service already sorts Subtasks directly
+	// beneath their Parent Task, and a stable sort restricted to the
+	// top-level Tasks is the same order the ParentID-IS-NULL query returned.
+	tasks, err := m.svc.ListTasks(m.ctx, todo.TaskFilter{})
 	if err != nil {
 		m.err = err
 		return
 	}
 	m.err = nil
-	m.tasks = tasks
+	m.setTasks(tasks)
 
 	if _, ok := m.selectedTask(); ok {
-		m.setSelection(m.selectedID) // id unchanged; still refresh detailChildren
 		return
 	}
 	if m.layout == layoutKanban {
@@ -130,30 +139,38 @@ func (m *model) reload() {
 	m.selectNearest(m.tasks, fallbackIdx)
 }
 
-// loadDetailChildren refreshes the Subtask list the detail view shows. It uses
-// the same ParentID call path as `todo list --parent 4` rather than a dedicated
-// TaskWithChildren type.
-func (m *model) loadDetailChildren() {
-	t, ok := m.selectedTask()
-	if !ok {
-		m.detailChildren = nil
+// setTasks splits one list response into the rows to render and the Subtasks
+// grouped under their Parent Task.
+func (m *model) setTasks(all []todo.Task) {
+	m.childrenByParent = make(map[int64][]todo.Task)
+	for _, t := range all {
+		if t.IsSubtask() {
+			m.childrenByParent[*t.ParentID] = append(m.childrenByParent[*t.ParentID], t)
+		}
+	}
+
+	if m.showSubtasks {
+		m.tasks = all
 		return
 	}
-	children, err := m.svc.ListTasks(m.ctx, todo.TaskFilter{ParentID: todo.Set(&t.ID)})
-	if err != nil {
-		m.err = err
-		return
+	top := make([]todo.Task, 0, len(all))
+	for _, t := range all {
+		if !t.IsSubtask() {
+			top = append(top, t)
+		}
 	}
-	m.detailChildren = children
+	m.tasks = top
 }
 
-// setSelection is the one place a selection change funnels through, so
-// detailChildren can never drift out of sync with what's selected — every
-// caller that changes selectedID goes through here (or selectNearest, which
-// calls it) instead of assigning the field directly.
-func (m *model) setSelection(id int64) {
-	m.selectedID = id
-	m.loadDetailChildren()
+// detailChildren is the selected Parent Task's Subtasks, read from the group
+// built at load time. A Subtask, which can have no children of its own, and an
+// empty selection both yield nothing.
+func (m model) detailChildren() []todo.Task {
+	t, ok := m.selectedTask()
+	if !ok {
+		return nil
+	}
+	return m.childrenByParent[t.ID]
 }
 
 // selectNearest selects the task at idx in ts, clamped, or clears the
@@ -162,10 +179,10 @@ func (m *model) setSelection(id int64) {
 // disappeared.
 func (m *model) selectNearest(ts []todo.Task, idx int) {
 	if len(ts) == 0 {
-		m.setSelection(0)
+		m.selectedID = 0
 		return
 	}
-	m.setSelection(ts[clamp(idx, len(ts)-1)].ID)
+	m.selectedID = ts[clamp(idx, len(ts)-1)].ID
 }
 
 func (m model) size() (int, int) {
@@ -303,14 +320,33 @@ func (m model) View() string {
 	if m.quit {
 		return ""
 	}
+	var body string
 	switch m.layout {
 	case layoutSplit:
-		return m.viewSplit()
+		body = m.viewSplit()
 	case layoutKanban:
-		return m.viewKanban()
+		body = m.viewKanban()
 	default:
-		return m.viewList()
+		body = m.viewList()
 	}
+	return body + m.statusLine()
+}
+
+// statusLine is where a failure the session survived is shown: a write the
+// host refused or never received, on a device that is paired. It is a line
+// under the layout rather than a modal because the tasks on screen are still
+// the tasks the user was working on — the failure did not take them away, and
+// dismissing something to get back to them would suggest it had.
+//
+// It is empty whenever nothing has failed, which is what keeps it out of every
+// layout's ordinary rendering, and the next reload that succeeds clears it:
+// the model caches nothing, so a frame with no error on it was painted from an
+// answer the host gave just now.
+func (m model) statusLine() string {
+	if m.err == nil {
+		return ""
+	}
+	return "\n" + errorStyle.Render("! "+m.err.Error())
 }
 
 // overlay renders whatever modal is active (form, detail, or delete
@@ -325,7 +361,7 @@ func (m model) overlay(background string) string {
 		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, m.form.view(min(w-4, 60)))
 	case modeDetail:
 		if t, ok := m.selectedTask(); ok {
-			return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, viewDetail(t, m.detailChildren, min(w-4, 60)))
+			return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, viewDetail(t, m.detailChildren(), min(w-4, 60)))
 		}
 	case modeConfirmDelete:
 		return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, viewConfirm(m.pendingDeleteID))
@@ -445,11 +481,17 @@ func (m model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quit = true
 		return m, tea.Quit
 	case "y":
-		if err := m.svc.DeleteTask(m.ctx, m.pendingDeleteID); err != nil {
-			m.err = err
-		}
+		err := m.svc.DeleteTask(m.ctx, m.pendingDeleteID)
 		m.pendingDeleteID = 0
 		m.mode = modeBrowse
+		if err != nil {
+			// The delete is reported and the list is left alone: re-reading
+			// now would either fail too and replace the message with a less
+			// specific one, or succeed and quietly erase the news that the
+			// task the user asked to delete is still there.
+			m.err = err
+			return m, nil
+		}
 		m.reload()
 	case "n", "esc":
 		m.pendingDeleteID = 0

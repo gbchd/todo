@@ -15,15 +15,20 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/gbchd/todo/internal/config"
+	"github.com/gbchd/todo/internal/credential"
+	"github.com/gbchd/todo/internal/pairing"
 	"github.com/gbchd/todo/internal/repository"
 	"github.com/gbchd/todo/internal/service/todo"
 )
 
 var update = flag.Bool("update", false, "update golden files")
 
-func noopLaunchers() (TUILauncher, ServeLauncher) {
+func noopLaunchers() (TUILauncher, ServeLauncher, HostLauncher) {
 	return func(context.Context, *todo.Service, string, io.Reader, io.Writer) error { return nil },
-		func(context.Context, *todo.Service, string, io.Writer) error { return nil }
+		func(context.Context, *todo.Service, string, io.Writer) error { return nil },
+		func(context.Context, *todo.Service, string, credential.Source, *pairing.Store, io.Writer) error {
+			return nil
+		}
 }
 
 func newDB(t *testing.T) string {
@@ -45,9 +50,9 @@ func seed(t *testing.T, dbPath string, tasks ...todo.Task) {
 func runCLI(t *testing.T, dbPath string, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
 	var outBuf, errBuf bytes.Buffer
-	tui, serve := noopLaunchers()
+	tui, serve, host := noopLaunchers()
 	full := append([]string{"todo", "--db", dbPath}, args...)
-	code = Run(context.Background(), full, strings.NewReader(""), &outBuf, &errBuf, config.Config{}, tui, serve)
+	code = Run(context.Background(), full, strings.NewReader(""), &outBuf, &errBuf, config.Config{}, tui, serve, host)
 	return outBuf.String(), errBuf.String(), code
 }
 
@@ -81,13 +86,13 @@ func TestDBFlag_AllStyles(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dbPath := newDB(t)
-			tui, serve := noopLaunchers()
+			tui, serve, host := noopLaunchers()
 			title := "task via " + tt.name
 
 			var outBuf, errBuf bytes.Buffer
 			addArgs := append([]string{"todo"}, tt.dbArgs(dbPath)...)
 			addArgs = append(addArgs, "add", title)
-			code := Run(context.Background(), addArgs, strings.NewReader(""), &outBuf, &errBuf, config.Config{}, tui, serve)
+			code := Run(context.Background(), addArgs, strings.NewReader(""), &outBuf, &errBuf, config.Config{}, tui, serve, host)
 			require.Equal(t, 0, code, "add: stdout=%q stderr=%q", outBuf.String(), errBuf.String())
 
 			_, statErr := os.Stat(dbPath)
@@ -97,7 +102,7 @@ func TestDBFlag_AllStyles(t *testing.T) {
 			errBuf.Reset()
 			listArgs := append([]string{"todo"}, tt.dbArgs(dbPath)...)
 			listArgs = append(listArgs, "list")
-			code = Run(context.Background(), listArgs, strings.NewReader(""), &outBuf, &errBuf, config.Config{}, tui, serve)
+			code = Run(context.Background(), listArgs, strings.NewReader(""), &outBuf, &errBuf, config.Config{}, tui, serve, host)
 			require.Equal(t, 0, code, "list: stderr=%q", errBuf.String())
 			assert.Contains(t, outBuf.String(), title, "task added via one invocation must be visible to a later invocation against the same --db path")
 		})
@@ -168,8 +173,8 @@ func TestDelete_PromptDeclined(t *testing.T) {
 	runCLI(t, dbPath, "add", "task")
 
 	var outBuf, errBuf bytes.Buffer
-	tui, serve := noopLaunchers()
-	code := Run(context.Background(), []string{"todo", "--db", dbPath, "delete", "1"}, strings.NewReader("n\n"), &outBuf, &errBuf, config.Config{}, tui, serve)
+	tui, serve, host := noopLaunchers()
+	code := Run(context.Background(), []string{"todo", "--db", dbPath, "delete", "1"}, strings.NewReader("n\n"), &outBuf, &errBuf, config.Config{}, tui, serve, host)
 	require.Equal(t, 0, code)
 	assert.Contains(t, outBuf.String(), "Aborted")
 

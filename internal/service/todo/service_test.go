@@ -174,6 +174,69 @@ func TestUpdateTask_EmptyPatchDoesNotBumpUpdatedAt(t *testing.T) {
 	assert.True(t, got.UpdatedAt.Equal(created.UpdatedAt), "UpdatedAt should not change on an empty patch")
 }
 
+func TestUpdateTask_MatchingExpectedVersionApplies(t *testing.T) {
+	ctx := context.Background()
+	svc, clock := newTestService()
+	created, _ := svc.AddTask(ctx, NewTask{Title: "orig"})
+
+	*clock = clock.Add(time.Hour)
+	got, err := svc.UpdateTask(ctx, created.ID, TaskPatch{
+		Title:           Set("changed"),
+		ExpectedVersion: Set(created.Version),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "changed", got.Title)
+	assert.True(t, got.UpdatedAt.Equal(*clock), "a real change alongside the precondition still stamps UpdatedAt")
+}
+
+func TestUpdateTask_StaleExpectedVersionConflicts(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestService()
+	created, _ := svc.AddTask(ctx, NewTask{Title: "orig"})
+	_, err := svc.UpdateTask(ctx, created.ID, TaskPatch{Title: Set("theirs")})
+	require.NoError(t, err)
+
+	_, err = svc.UpdateTask(ctx, created.ID, TaskPatch{
+		Title:           Set("mine"),
+		ExpectedVersion: Set(created.Version),
+	})
+
+	var cerr *ConflictError
+	require.ErrorAs(t, err, &cerr)
+	assert.Equal(t, created.ID, cerr.TaskID)
+	assert.Equal(t, created.Version, cerr.Expected)
+	assert.Greater(t, cerr.Actual, cerr.Expected)
+
+	got, err := svc.GetTask(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "theirs", got.Title, "a conflicting patch must write nothing at all")
+}
+
+func TestUpdateTask_AbsentExpectedVersionIsUnconditional(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestService()
+	created, _ := svc.AddTask(ctx, NewTask{Title: "orig"})
+	_, err := svc.UpdateTask(ctx, created.ID, TaskPatch{Title: Set("theirs")})
+	require.NoError(t, err)
+
+	got, err := svc.UpdateTask(ctx, created.ID, TaskPatch{Title: Set("mine")})
+	require.NoError(t, err, "an omitted expected version must behave exactly as before")
+	assert.Equal(t, "mine", got.Title)
+}
+
+// A precondition is not an edit: naming the current version and changing
+// nothing must be as inert as an empty patch.
+func TestUpdateTask_ExpectedVersionAloneDoesNotBumpUpdatedAt(t *testing.T) {
+	ctx := context.Background()
+	svc, clock := newTestService()
+	created, _ := svc.AddTask(ctx, NewTask{Title: "x"})
+
+	*clock = clock.Add(time.Hour)
+	got, err := svc.UpdateTask(ctx, created.ID, TaskPatch{ExpectedVersion: Set(created.Version)})
+	require.NoError(t, err)
+	assert.True(t, got.UpdatedAt.Equal(created.UpdatedAt), "a matching precondition alone is not a change")
+}
+
 func TestStatusLifecycle(t *testing.T) {
 	ctx := context.Background()
 	svc, clock := newTestService()

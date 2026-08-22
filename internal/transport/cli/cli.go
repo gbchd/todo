@@ -16,7 +16,10 @@ import (
 	"golang.org/x/term"
 
 	"github.com/gbchd/todo/internal/config"
+	"github.com/gbchd/todo/internal/credential"
+	"github.com/gbchd/todo/internal/pairing"
 	"github.com/gbchd/todo/internal/repository"
+	"github.com/gbchd/todo/internal/repository/remote"
 	"github.com/gbchd/todo/internal/service/todo"
 )
 
@@ -35,15 +38,20 @@ type TUILauncher func(ctx context.Context, svc *todo.Service, layout string, std
 // ServeLauncher starts the web adapter; wired to internal/transport/web.Run.
 type ServeLauncher func(ctx context.Context, svc *todo.Service, addr string, stdout io.Writer) error
 
+// HostLauncher starts the host adapter; wired to internal/transport/host.Run.
+// creds is how the host resolves the device a request's token names, and pairs
+// is the outstanding pairing offer `todo host pair` opens in another process.
+type HostLauncher func(ctx context.Context, svc *todo.Service, addr string, creds credential.Source, pairs *pairing.Store, stdout io.Writer) error
+
 // Run parses args and executes the matching todo subcommand, returning the
 // process exit code. urfave/cli is the single parser for --db: the root
 // command's Before hook opens the repository and builds the Service once
 // the flag's real, fully-parsed value is available, so tests can drive
 // this end-to-end against a seeded temp-file database.
-func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, cfg config.Config, runTUI TUILauncher, runServe ServeLauncher) int {
+func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, cfg config.Config, runTUI TUILauncher, runServe ServeLauncher, runHost HostLauncher) int {
 	holder := &serviceHolder{}
 	color := isTTY(stdout)
-	root := buildRoot(holder, cfg, stdin, stdout, stderr, color, runTUI, runServe)
+	root := buildRoot(holder, cfg, stdin, stdout, stderr, color, runTUI, runServe, runHost)
 
 	if err := root.Run(ctx, args); err != nil {
 		var ec tcli.ExitCoder
@@ -72,7 +80,7 @@ func parseID(s string) (int64, error) {
 	return id, nil
 }
 
-func buildRoot(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout, stderr io.Writer, color bool, runTUI TUILauncher, runServe ServeLauncher) *tcli.Command {
+func buildRoot(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout, stderr io.Writer, color bool, runTUI TUILauncher, runServe ServeLauncher, runHost HostLauncher) *tcli.Command {
 	var repo *repository.SQLiteRepository
 
 	return &tcli.Command{
@@ -82,10 +90,43 @@ func buildRoot(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout
 		ErrWriter: stderr,
 		Flags: []tcli.Flag{
 			&tcli.StringFlag{Name: "db", Usage: "path to the SQLite database", Value: cfg.DBPath},
+			&tcli.BoolFlag{
+				Name:  config.LocalFlag,
+				Usage: "use this machine's own database for this command, even when paired with a host",
+			},
 		},
 		ExitErrHandler: func(context.Context, *tcli.Command, error) {},
 		Before: func(ctx context.Context, cmd *tcli.Command) (context.Context, error) {
-			r, err := repository.Open(ctx, cmd.String("db"))
+			// Two commands are not about this machine's own task list, and
+			// opening the client's database for them would leave a stray empty
+			// todo.db behind: `todo host` owns a different database — the one
+			// named in host.toml — and opens it itself, and `todo pair` runs on
+			// a device that is about to stop having a local database at all.
+			if needsNoRepository(cmd.Args().First()) {
+				return ctx, nil
+			}
+
+			// Which backend this command speaks to is settled before anything
+			// is opened, so that a refusal — a --db against a paired device,
+			// a host with no credential — never first creates a database it
+			// then declines to use.
+			selection, err := config.SelectBackend(cfg, config.Override{
+				Local:     cmd.Bool(config.LocalFlag),
+				DBPath:    cmd.String("db"),
+				DBPathSet: cmd.IsSet("db"),
+				Secret:    os.Getenv(config.SecretEnv),
+			})
+			if err != nil {
+				fmt.Fprintln(stderr, "Error:", err)
+				return ctx, tcli.Exit(err, 1)
+			}
+
+			if selection.Remote {
+				holder.svc = todo.NewService(remote.New(selection.HostURL, selection.Secret))
+				return ctx, nil
+			}
+
+			r, err := repository.Open(ctx, selection.DBPath)
 			if err != nil {
 				fmt.Fprintln(stderr, "Error:", err)
 				return ctx, tcli.Exit(err, 1)
@@ -109,10 +150,18 @@ func buildRoot(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout
 			doneCommand(holder, stdout, stderr),
 			reopenCommand(holder, stdout, stderr),
 			deleteCommand(holder, stdin, stdout, stderr),
-			tuiCommand(holder, cfg, stdin, stdout, runTUI),
+			tuiCommand(holder, cfg, stdin, stdout, stderr, runTUI),
 			serveCommand(holder, cfg, stdout, runServe),
+			hostCommand(stdout, stderr, runHost),
+			pairCommand(stdout, stderr),
 		},
 	}
+}
+
+// needsNoRepository reports whether a subcommand runs without the client's
+// task database.
+func needsNoRepository(name string) bool {
+	return name == hostCommandName || name == pairCommandName
 }
 
 func addCommand(holder *serviceHolder, stdout, stderr io.Writer) *tcli.Command {
@@ -411,7 +460,11 @@ func confirm(r io.Reader) bool {
 	return line == "y" || line == "yes"
 }
 
-func tuiCommand(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout io.Writer, runTUI TUILauncher) *tcli.Command {
+// tuiCommand launches the interactive UI. A launcher that returns before the
+// session ever ran — a paired device whose host did not answer the first read
+// — is reported like any other command's failure, so that `todo tui` and `todo
+// list` against the same dead host exit the same way and say the same thing.
+func tuiCommand(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout, stderr io.Writer, runTUI TUILauncher) *tcli.Command {
 	return &tcli.Command{
 		Name:  "tui",
 		Usage: "launch the interactive terminal UI",
@@ -419,7 +472,143 @@ func tuiCommand(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdou
 			&tcli.StringFlag{Name: "layout", Value: cfg.TUILayout, Usage: "list|split|kanban"},
 		},
 		Action: func(ctx context.Context, cmd *tcli.Command) error {
-			return runTUI(ctx, holder.svc, cmd.String("layout"), stdin, stdout)
+			if err := runTUI(ctx, holder.svc, cmd.String("layout"), stdin, stdout); err != nil {
+				return reportErr(stderr, err, 0)
+			}
+			return nil
+		},
+	}
+}
+
+// hostCommandName is matched in the root Before hook, so it lives next to the
+// command it names.
+const hostCommandName = "host"
+
+// hostCommand serves the task API over HTTP from the host's own settings file.
+//
+// It opens its own repository instead of using the root command's: host.toml
+// names the database the host owns, which is deliberately not the one
+// config.toml names for the local client, so that one machine can host one
+// list and use another. Flags override the file, and the resulting settings
+// are validated before anything is opened or bound — a refusal to listen must
+// not first create a database.
+//
+// `todo host pair`, `todo host clients` and `todo host revoke` mount here as
+// subcommands. They manage the same file this action reads, which is why none
+// of them takes a path: host.toml is the host's, singular.
+func hostCommand(stdout, stderr io.Writer, runHost HostLauncher) *tcli.Command {
+	return &tcli.Command{
+		Name:  hostCommandName,
+		Usage: "serve the task API over HTTP",
+		Flags: []tcli.Flag{
+			&tcli.StringFlag{Name: "addr", Usage: "address to listen on"},
+			&tcli.StringFlag{Name: "db", Usage: "path to the SQLite database the host owns"},
+		},
+		Commands: []*tcli.Command{
+			hostPairCommand(stdout, stderr),
+			hostClientsCommand(stdout, stderr),
+			hostRevokeCommand(stdout, stderr),
+		},
+		Action: func(ctx context.Context, cmd *tcli.Command) error {
+			hostCfg, err := config.LoadHost()
+			if err != nil {
+				return reportErr(stderr, err, 0)
+			}
+			if cmd.IsSet("addr") {
+				hostCfg.ListenAddr = cmd.String("addr")
+			}
+			if cmd.IsSet("db") {
+				hostCfg.DBPath = cmd.String("db")
+			}
+			if err := hostCfg.Validate(); err != nil {
+				return reportErr(stderr, err, 0)
+			}
+
+			repo, err := repository.Open(ctx, hostCfg.DBPath)
+			if err != nil {
+				return reportErr(stderr, err, 0)
+			}
+			defer repo.Close()
+
+			dir, err := config.Dir()
+			if err != nil {
+				return reportErr(stderr, err, 0)
+			}
+			// The store is read per request, so a code `todo host pair` opens
+			// minutes after the host started is still seen by it.
+			pairs := pairing.NewStore(dir, registerDevice)
+
+			return runHost(ctx, todo.NewService(repo), hostCfg.ListenAddr, hostCredentials, pairs, stdout)
+		},
+	}
+}
+
+// hostCredentials resolves the device a token names by reading host.toml, and
+// is called once per authenticated request rather than once at startup.
+//
+// Revoking a device that was lost this morning has to take effect this
+// morning; a revocation that waits for the operator to remember to restart the
+// host is not a revocation. Re-reading a handful of lines of TOML costs
+// nothing beside the password-hash verification that immediately follows it.
+// A file that cannot be read denies the request, because a credential store
+// that fails open is worse than one that is down.
+func hostCredentials(id string) (credential.Credential, bool) {
+	cfg, err := config.LoadHost()
+	if err != nil {
+		return credential.Credential{}, false
+	}
+	return cfg.Credential(id)
+}
+
+// hostClientsCommand lists the devices registered with this host.
+//
+// It prints each device's name, its credential id, and when it was added, and
+// deliberately nothing else: the file it reads holds a password hash per
+// device and no usable secret, and printing the hash would only invite someone
+// to paste it somewhere. The id is not secret — it is half of a token, and the
+// half that proves nothing — and is shown because revoke needs it whenever two
+// devices share a name.
+func hostClientsCommand(stdout, stderr io.Writer) *tcli.Command {
+	return &tcli.Command{
+		Name:  "clients",
+		Usage: "list the devices registered with this host",
+		Action: func(_ context.Context, _ *tcli.Command) error {
+			cfg, err := config.LoadHost()
+			if err != nil {
+				return reportErr(stderr, err, 0)
+			}
+			printClients(stdout, cfg.Clients)
+			return nil
+		},
+	}
+}
+
+// hostRevokeCommand removes one device's credential, leaving every other
+// device working. There is no confirmation prompt: revoking is the safe
+// direction, and the cost of a mistake is one re-pairing.
+func hostRevokeCommand(stdout, stderr io.Writer) *tcli.Command {
+	return &tcli.Command{
+		Name:      "revoke",
+		Usage:     "remove one device's credential",
+		ArgsUsage: "<device name or id>",
+		Action: func(_ context.Context, cmd *tcli.Command) error {
+			target := cmd.Args().First()
+			if target == "" {
+				return reportErr(stderr, errors.New("missing device: name or id of the device to revoke"), 0)
+			}
+			cfg, err := config.LoadHost()
+			if err != nil {
+				return reportErr(stderr, err, 0)
+			}
+			removed, err := cfg.RemoveClient(target)
+			if err != nil {
+				return reportErr(stderr, err, 0)
+			}
+			if err := config.SaveHost(cfg); err != nil {
+				return reportErr(stderr, err, 0)
+			}
+			fmt.Fprintf(stdout, "Revoked %s (%s). Every other device keeps working.\n", removed.Name, removed.ID)
+			return nil
 		},
 	}
 }

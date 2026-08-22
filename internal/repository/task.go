@@ -22,7 +22,7 @@ const (
 	// day-granularity due date on a single-machine app means; comparing
 	// against UTC would call a task overdue a few hours early or late.
 	selectTasks = `SELECT t.id, t.title, t.description, t.status, t.priority, t.due_date, t.parent_id,
-	       t.created_at, t.updated_at, t.completed_at,
+	       t.created_at, t.updated_at, t.completed_at, t.version,
 	       COUNT(c.id),
 	       COALESCE(SUM(c.status = 'done'), 0),
 	       COALESCE(MAX(c.status <> 'done' AND c.due_date IS NOT NULL AND c.due_date < date('now','localtime')), 0)
@@ -83,7 +83,7 @@ func scanTask(row scanner) (todo.Task, error) {
 		anyChildOverdue                   int
 	)
 	if err := row.Scan(&t.ID, &t.Title, &description, &status, &priority, &dueDate, &parentID,
-		&createdAt, &updatedAt, &completedAt,
+		&createdAt, &updatedAt, &completedAt, &t.Version,
 		&t.ChildCount, &t.DoneChildCount, &anyChildOverdue); err != nil {
 		return todo.Task{}, err
 	}
@@ -129,7 +129,9 @@ func scanTask(row scanner) (todo.Task, error) {
 	return t, nil
 }
 
-// Create inserts t and returns the stored row (with id assigned).
+// Create inserts t and returns the stored row (with id assigned). t.Version is
+// ignored: the column's default seeds every new row at 1, so a caller cannot
+// hand a task a version it did not earn.
 func (r *SQLiteRepository) Create(ctx context.Context, t todo.Task) (todo.Task, error) {
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO tasks (title, description, status, priority, due_date, parent_id, created_at, updated_at, completed_at)
@@ -165,11 +167,14 @@ func getTask(ctx context.Context, q queryExecer, id int64) (todo.Task, error) {
 	return t, nil
 }
 
-// updateTask overwrites the row matching t.ID with t's fields.
+// updateTask overwrites the row matching t.ID with t's fields and increments
+// the row's version. The increment is computed in SQL rather than from t so it
+// counts writes rather than trusting the caller's copy: t.Version is whatever
+// the row held when it was read, and every write must move past it.
 func updateTask(ctx context.Context, q queryExecer, t todo.Task) (todo.Task, error) {
 	res, err := q.ExecContext(ctx,
 		`UPDATE tasks SET title=?, description=?, status=?, priority=?, due_date=?, parent_id=?,
-		        created_at=?, updated_at=?, completed_at=?
+		        created_at=?, updated_at=?, completed_at=?, version=version+1
 		 WHERE id=?`,
 		t.Title, nullString(t.Description), string(t.Status), string(t.Priority),
 		nullDate(t.DueDate), nullID(t.ParentID),

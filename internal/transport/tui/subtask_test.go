@@ -30,9 +30,9 @@ func TestModel_AddSubtaskFromDetailView(t *testing.T) {
 	assert.Equal(t, modeDetail, m.mode, "want to land back on the parent that created it")
 	require.Len(t, m.tasks, 2, "a new subtask must not appear in the top-level list")
 	assert.Equal(t, 1, m.tasks[0].ChildCount, "the parent's row must roll the subtask up")
-	require.Len(t, m.detailChildren, 1)
-	require.NotNil(t, m.detailChildren[0].ParentID)
-	assert.Equal(t, parentID, *m.detailChildren[0].ParentID)
+	require.Len(t, m.detailChildren(), 1)
+	require.NotNil(t, m.detailChildren()[0].ParentID)
+	assert.Equal(t, parentID, *m.detailChildren()[0].ParentID)
 }
 
 func TestModel_ToggleRevealsSubtasks(t *testing.T) {
@@ -96,14 +96,14 @@ func TestModel_SubtaskListFollowsCursor(t *testing.T) {
 	m = addSubtaskToFirstTask(t, m)
 	m = send(t, m, "esc")
 
-	require.Len(t, m.detailChildren, 1, "cursor starts on the parent")
+	require.Len(t, m.detailChildren(), 1, "cursor starts on the parent")
 
 	m = send(t, m, "down")
 	selected, ok := m.selectedTask()
 	require.True(t, ok)
 	require.Equal(t, "second task", selected.Title)
-	assert.Empty(t, m.detailChildren, "a task with no subtasks must not show the previous task's")
+	assert.Empty(t, m.detailChildren(), "a task with no subtasks must not show the previous task's")
 
 	m = send(t, m, "up")
-	assert.Len(t, m.detailChildren, 1, "moving back restores the parent's subtasks")
+	assert.Len(t, m.detailChildren(), 1, "moving back restores the parent's subtasks")
 }
