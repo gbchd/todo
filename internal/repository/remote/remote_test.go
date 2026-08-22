@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -358,6 +359,63 @@ func TestCreate_StoresANonOpenStatusInOneWrite(t *testing.T) {
 	got, err := repo.Get(t.Context(), created.ID)
 	require.NoError(t, err)
 	assert.Equal(t, todo.StatusDone, got.Status)
+}
+
+// A dropped filter key is invisible from above the port: the Service sorts
+// what it is handed a second time, so a host that never heard of the sort
+// still answers in an order the caller cannot fault. The only place the key
+// can be held to is the request itself.
+func TestList_SendsTheWholeFilterOnTheWire(t *testing.T) {
+	var query url.Values
+	capture := &interference{method: http.MethodGet}
+	capture.before = func(_ http.ResponseWriter, r *http.Request, _ int64) bool {
+		query = r.URL.Query()
+		return false
+	}
+	repo, _ := newHostedRepo(t, capture.middleware)
+
+	before := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	after := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	status, priority := todo.StatusDone, todo.PriorityHigh
+	_, err := repo.List(t.Context(), todo.TaskFilter{
+		Status:    &status,
+		Priority:  &priority,
+		DueBefore: &before,
+		DueAfter:  &after,
+		ParentID:  todo.Set[*int64](nil),
+		SortBy:    todo.SortPriority,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "priority", query.Get("sort"), "the sort key must reach the host")
+	assert.Equal(t, "done", query.Get("status"))
+	assert.Equal(t, "high", query.Get("priority"))
+	assert.Equal(t, "2026-08-01", query.Get("due_before"))
+	assert.Equal(t, "2026-07-01", query.Get("due_after"))
+	assert.Equal(t, "none", query.Get("parent"))
+}
+
+// The sort key travels as the domain spells it, because the host hands the
+// raw string back to its own Service: a name this end invented would come
+// back as a validation error from the other one.
+func TestFilterQuery_SortKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		key  todo.SortKey
+		want string
+	}{
+		{name: "the default is not sent at all", key: todo.SortDefault},
+		{name: "priority", key: todo.SortPriority, want: "priority"},
+		{name: "id", key: todo.SortID, want: "id"},
+		{name: "created", key: todo.SortCreated, want: "created"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := filterQuery(todo.TaskFilter{SortBy: tt.key})
+			assert.Equal(t, tt.want, q.Get("sort"))
+			assert.Equal(t, tt.want != "", q.Has("sort"), "an unset sort must leave the host's own default alone")
+		})
+	}
 }
 
 // TestUpdateWith_LeavesCompletedAtAloneOnAnUnrelatedEdit is why the PATCH body
