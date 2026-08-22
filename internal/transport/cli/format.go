@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"io"
 	"text/tabwriter"
+	"time"
 
+	"github.com/gbchd/todo/internal/config"
 	"github.com/gbchd/todo/internal/service/todo"
 )
 
@@ -118,4 +120,39 @@ func printDetail(w io.Writer, t todo.Task, color bool) {
 	} else {
 		fmt.Fprintf(w, "  %s\n", t.Description)
 	}
+}
+
+// printClients renders the host's registered devices as an aligned
+// NAME | ID | ADDED table.
+//
+// There is no column for the secret and there cannot be one: the host stores a
+// password hash and never the secret itself, so the listing is safe to read
+// aloud, screenshot, or leave on screen.
+func printClients(w io.Writer, clients []config.HostClient) {
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tID\tADDED")
+	if len(clients) == 0 {
+		fmt.Fprintln(tw, "(no devices registered)")
+		tw.Flush()
+		return
+	}
+	for _, c := range clients {
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", c.Name, c.ID, formatAdded(c.CreatedAt))
+	}
+	tw.Flush()
+}
+
+// formatAdded renders a device's stored RFC 3339 timestamp the way the rest of
+// the CLI renders times. Text it cannot parse is shown as it was found rather
+// than swallowed: a hand-edited file is the operator's business, and hiding
+// what is in it would not help them fix it.
+func formatAdded(created string) string {
+	if created == "" {
+		return "-"
+	}
+	t, err := time.Parse(time.RFC3339, created)
+	if err != nil {
+		return created
+	}
+	return t.Local().Format("2006-01-02 15:04")
 }

@@ -6,8 +6,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/gbchd/todo/internal/credential"
 )
 
 const (
@@ -32,15 +37,88 @@ type HostConfig struct {
 	Clients    []HostClient `toml:"clients"`
 }
 
-// HostClient is one registered device credential. No command issues one yet —
-// pairing is separate work — but the entry exists so the host has a place to
-// record devices and Validate has something to count. SecretHash is a hash,
-// never a usable secret: reading this file must not yield working credentials.
+// HostClient is one registered device: the credential the host checks tokens
+// against, plus the two things an operator needs to recognise the device
+// months later and decide whether to revoke it. SecretHash is a password hash,
+// never a usable secret — reading this file must not yield working
+// credentials, which is the whole reason the secret is not in it.
+//
+// CreatedAt is RFC 3339 text rather than a time.Time so the file stays
+// readable and its round-trip through TOML stays exact.
 type HostClient struct {
 	ID         string `toml:"id"`
 	Name       string `toml:"name"`
 	SecretHash string `toml:"secret_hash"`
 	CreatedAt  string `toml:"created_at"`
+}
+
+// AddClient registers cred under name and returns the stored record. Name is
+// the operator's label for the device and is not required to be unique — two
+// laptops may both be called "laptop" — so identity stays the credential id.
+//
+// This is the seam pairing mounts on: pairing calls credential.Issue, hands
+// the record here, and saves the config.
+func (c *HostConfig) AddClient(name string, cred credential.Credential) HostClient {
+	client := HostClient{
+		ID:         cred.ID,
+		Name:       name,
+		SecretHash: cred.SecretHash,
+		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+	}
+	c.Clients = append(c.Clients, client)
+	return client
+}
+
+// RemoveClient revokes one device, named by its id or by its name, and
+// returns the record it removed. Every other device is left untouched: losing
+// one machine must not cost the others a re-pairing.
+//
+// A name shared by several devices is refused rather than guessed at, because
+// the two plausible guesses — the first match, or all of them — are both
+// wrong in a way the operator would only discover later.
+func (c *HostConfig) RemoveClient(target string) (HostClient, error) {
+	if i := slices.IndexFunc(c.Clients, func(x HostClient) bool { return x.ID == target }); i >= 0 {
+		removed := c.Clients[i]
+		c.Clients = slices.Delete(c.Clients, i, i+1)
+		return removed, nil
+	}
+
+	var matches []int
+	for i, client := range c.Clients {
+		if client.Name == target {
+			matches = append(matches, i)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return HostClient{}, fmt.Errorf("no device named %q is registered with this host", target)
+	case 1:
+		i := matches[0]
+		removed := c.Clients[i]
+		c.Clients = slices.Delete(c.Clients, i, i+1)
+		return removed, nil
+	default:
+		ids := make([]string, 0, len(matches))
+		for _, i := range matches {
+			ids = append(ids, c.Clients[i].ID)
+		}
+		return HostClient{}, fmt.Errorf(
+			"%d devices are named %q; revoke by id instead, one of: %s",
+			len(matches), target, strings.Join(ids, ", "))
+	}
+}
+
+// Credential returns the credential registered under id, in the shape
+// authentication checks a token against. It reports false for an id no device
+// holds; the caller is required to answer that indistinguishably from a wrong
+// secret.
+func (c HostConfig) Credential(id string) (credential.Credential, bool) {
+	for _, client := range c.Clients {
+		if client.ID == id {
+			return credential.Credential{ID: client.ID, SecretHash: client.SecretHash}, true
+		}
+	}
+	return credential.Credential{}, false
 }
 
 // LoadHost reads host.toml from ~/.todo, creating it with defaults on first
@@ -79,6 +157,15 @@ func LoadHostFrom(dir string) (HostConfig, error) {
 	cfg.ListenAddr = cmp.Or(cfg.ListenAddr, DefaultHostAddr)
 	cfg.DBPath = cmp.Or(cfg.DBPath, filepath.Join(dir, dbName))
 	return cfg, nil
+}
+
+// SaveHost writes cfg to host.toml in ~/.todo.
+func SaveHost(cfg HostConfig) error {
+	dir, err := Dir()
+	if err != nil {
+		return err
+	}
+	return SaveHostTo(dir, cfg)
 }
 
 // SaveHostTo writes cfg to host.toml in dir with owner-only permissions.
