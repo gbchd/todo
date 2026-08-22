@@ -155,12 +155,17 @@ type Store struct {
 	path     string
 	register Register
 	mu       sync.Mutex
+
+	// now is a field so tests can drive a window shut without sleeping
+	// through it. The window is minutes long by design, and a test that
+	// waited it out would be a test that waited.
+	now func() time.Time
 }
 
 // NewStore returns the offer store kept in dir, which is the app's config
 // directory. register may be nil; see the Store comment.
 func NewStore(dir string, register Register) *Store {
-	return &Store{path: filepath.Join(dir, fileName), register: register}
+	return &Store{path: filepath.Join(dir, fileName), register: register, now: time.Now}
 }
 
 // NewCode returns a fresh pairing code from a cryptographically secure source.
@@ -190,13 +195,13 @@ func (s *Store) Open(code string, window time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if rec, err := s.read(); err == nil && state(rec) == StateOpen {
+	if rec, err := s.read(); err == nil && s.state(rec) == StateOpen {
 		return errors.New("a pairing code is already outstanding on this host; finish that pairing, or wait for it to expire, before starting another")
 	}
 	return s.write(record{
 		State:     StateOpen,
 		CodeHash:  hashCode(code),
-		ExpiresAt: time.Now().Add(window).UTC(),
+		ExpiresAt: s.now().Add(window).UTC(),
 	})
 }
 
@@ -225,7 +230,7 @@ func (s *Store) Outcome() Outcome {
 		return Outcome{State: StateNone}
 	}
 	return Outcome{
-		State:    state(rec),
+		State:    s.state(rec),
 		Device:   Device{ID: rec.ClientID, Name: rec.ClientName},
 		Attempts: rec.Attempts,
 	}
@@ -253,7 +258,7 @@ func (s *Store) Redeem(code, deviceName string) (Device, bool) {
 	if err != nil {
 		return Device{}, false
 	}
-	switch state(rec) {
+	switch s.state(rec) {
 	case StateOpen:
 	case StateExpired:
 		rec.State = StateExpired
@@ -292,8 +297,8 @@ func (s *Store) Redeem(code, deviceName string) (Device, bool) {
 // state resolves an offer that is nominally open but past its window. Expiry
 // is computed on every read rather than swept by a timer, so a host that was
 // not running when the window closed still treats the offer as shut.
-func state(rec record) State {
-	if rec.State == StateOpen && time.Now().After(rec.ExpiresAt) {
+func (s *Store) state(rec record) State {
+	if rec.State == StateOpen && s.now().After(rec.ExpiresAt) {
 		return StateExpired
 	}
 	return rec.State
