@@ -35,15 +35,18 @@ type TUILauncher func(ctx context.Context, svc *todo.Service, layout string, std
 // ServeLauncher starts the web adapter; wired to internal/transport/web.Run.
 type ServeLauncher func(ctx context.Context, svc *todo.Service, addr string, stdout io.Writer) error
 
+// HostLauncher starts the host adapter; wired to internal/transport/host.Run.
+type HostLauncher func(ctx context.Context, svc *todo.Service, addr string, stdout io.Writer) error
+
 // Run parses args and executes the matching todo subcommand, returning the
 // process exit code. urfave/cli is the single parser for --db: the root
 // command's Before hook opens the repository and builds the Service once
 // the flag's real, fully-parsed value is available, so tests can drive
 // this end-to-end against a seeded temp-file database.
-func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, cfg config.Config, runTUI TUILauncher, runServe ServeLauncher) int {
+func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, cfg config.Config, runTUI TUILauncher, runServe ServeLauncher, runHost HostLauncher) int {
 	holder := &serviceHolder{}
 	color := isTTY(stdout)
-	root := buildRoot(holder, cfg, stdin, stdout, stderr, color, runTUI, runServe)
+	root := buildRoot(holder, cfg, stdin, stdout, stderr, color, runTUI, runServe, runHost)
 
 	if err := root.Run(ctx, args); err != nil {
 		var ec tcli.ExitCoder
@@ -72,7 +75,7 @@ func parseID(s string) (int64, error) {
 	return id, nil
 }
 
-func buildRoot(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout, stderr io.Writer, color bool, runTUI TUILauncher, runServe ServeLauncher) *tcli.Command {
+func buildRoot(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout, stderr io.Writer, color bool, runTUI TUILauncher, runServe ServeLauncher, runHost HostLauncher) *tcli.Command {
 	var repo *repository.SQLiteRepository
 
 	return &tcli.Command{
@@ -85,6 +88,12 @@ func buildRoot(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout
 		},
 		ExitErrHandler: func(context.Context, *tcli.Command, error) {},
 		Before: func(ctx context.Context, cmd *tcli.Command) (context.Context, error) {
+			// `todo host` owns a different database — the one named in
+			// host.toml — and opens it itself. Opening the client's here would
+			// create a stray empty todo.db on a machine that only hosts.
+			if cmd.Args().First() == hostCommandName {
+				return ctx, nil
+			}
 			r, err := repository.Open(ctx, cmd.String("db"))
 			if err != nil {
 				fmt.Fprintln(stderr, "Error:", err)
@@ -111,6 +120,7 @@ func buildRoot(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdout
 			deleteCommand(holder, stdin, stdout, stderr),
 			tuiCommand(holder, cfg, stdin, stdout, runTUI),
 			serveCommand(holder, cfg, stdout, runServe),
+			hostCommand(stdout, stderr, runHost),
 		},
 	}
 }
@@ -420,6 +430,55 @@ func tuiCommand(holder *serviceHolder, cfg config.Config, stdin io.Reader, stdou
 		},
 		Action: func(ctx context.Context, cmd *tcli.Command) error {
 			return runTUI(ctx, holder.svc, cmd.String("layout"), stdin, stdout)
+		},
+	}
+}
+
+// hostCommandName is matched in the root Before hook, so it lives next to the
+// command it names.
+const hostCommandName = "host"
+
+// hostCommand serves the task API over HTTP from the host's own settings file.
+//
+// It opens its own repository instead of using the root command's: host.toml
+// names the database the host owns, which is deliberately not the one
+// config.toml names for the local client, so that one machine can host one
+// list and use another. Flags override the file, and the resulting settings
+// are validated before anything is opened or bound — a refusal to listen must
+// not first create a database.
+//
+// `todo host pair`, `todo host clients` and `todo host revoke` mount here as
+// subcommands once device credentials exist.
+func hostCommand(stdout, stderr io.Writer, runHost HostLauncher) *tcli.Command {
+	return &tcli.Command{
+		Name:  hostCommandName,
+		Usage: "serve the task API over HTTP",
+		Flags: []tcli.Flag{
+			&tcli.StringFlag{Name: "addr", Usage: "address to listen on"},
+			&tcli.StringFlag{Name: "db", Usage: "path to the SQLite database the host owns"},
+		},
+		Action: func(ctx context.Context, cmd *tcli.Command) error {
+			hostCfg, err := config.LoadHost()
+			if err != nil {
+				return reportErr(stderr, err, 0)
+			}
+			if cmd.IsSet("addr") {
+				hostCfg.ListenAddr = cmd.String("addr")
+			}
+			if cmd.IsSet("db") {
+				hostCfg.DBPath = cmd.String("db")
+			}
+			if err := hostCfg.Validate(); err != nil {
+				return reportErr(stderr, err, 0)
+			}
+
+			repo, err := repository.Open(ctx, hostCfg.DBPath)
+			if err != nil {
+				return reportErr(stderr, err, 0)
+			}
+			defer repo.Close()
+
+			return runHost(ctx, todo.NewService(repo), hostCfg.ListenAddr, stdout)
 		},
 	}
 }
