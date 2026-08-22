@@ -15,6 +15,7 @@ import (
 
 	"github.com/gbchd/todo/internal/config"
 	"github.com/gbchd/todo/internal/credential"
+	"github.com/gbchd/todo/internal/pairing"
 	"github.com/gbchd/todo/internal/service/todo"
 )
 
@@ -25,6 +26,7 @@ type hostRun struct {
 	addr   string
 	svc    *todo.Service
 	creds  credential.Source
+	pairs  *pairing.Store
 }
 
 // runHostCLI drives `todo host` with $HOME pointed at a temp directory, which
@@ -37,8 +39,8 @@ func runHostCLI(t *testing.T, home, clientDB string, args ...string) (rec *hostR
 	rec = &hostRun{}
 	var outBuf, errBuf bytes.Buffer
 	tui, serve, _ := noopLaunchers()
-	launch := func(_ context.Context, svc *todo.Service, addr string, creds credential.Source, _ io.Writer) error {
-		rec.called, rec.addr, rec.svc, rec.creds = true, addr, svc, creds
+	launch := func(_ context.Context, svc *todo.Service, addr string, creds credential.Source, pairs *pairing.Store, _ io.Writer) error {
+		rec.called, rec.addr, rec.svc, rec.creds, rec.pairs = true, addr, svc, creds, pairs
 		return nil
 	}
 	full := append([]string{"todo", "--db", clientDB, "host"}, args...)

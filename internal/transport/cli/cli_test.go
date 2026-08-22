@@ -16,6 +16,7 @@ import (
 
 	"github.com/gbchd/todo/internal/config"
 	"github.com/gbchd/todo/internal/credential"
+	"github.com/gbchd/todo/internal/pairing"
 	"github.com/gbchd/todo/internal/repository"
 	"github.com/gbchd/todo/internal/service/todo"
 )
@@ -25,7 +26,9 @@ var update = flag.Bool("update", false, "update golden files")
 func noopLaunchers() (TUILauncher, ServeLauncher, HostLauncher) {
 	return func(context.Context, *todo.Service, string, io.Reader, io.Writer) error { return nil },
 		func(context.Context, *todo.Service, string, io.Writer) error { return nil },
-		func(context.Context, *todo.Service, string, credential.Source, io.Writer) error { return nil }
+		func(context.Context, *todo.Service, string, credential.Source, *pairing.Store, io.Writer) error {
+			return nil
+		}
 }
 
 func newDB(t *testing.T) string {

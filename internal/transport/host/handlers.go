@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gbchd/todo/internal/pairing"
 	"github.com/gbchd/todo/internal/service/todo"
 )
 
@@ -33,10 +34,14 @@ const apiPrefix = "/api/v1"
 // credential yet — reachable without one.
 type Middleware func(http.Handler) http.Handler
 
-// NewMux builds the host's HTTP handler: the versioned task API, wrapped in
-// mw, and nothing else. Exported so tests can drive it via httptest without
-// starting a real listener.
-func NewMux(svc *todo.Service, mw ...Middleware) http.Handler {
+// NewMux builds the host's HTTP handler: the versioned task API wrapped in mw,
+// the pairing route outside it, and nothing else. Exported so tests can drive
+// it via httptest without starting a real listener.
+//
+// pairs may be nil, which leaves the pairing route unmounted. It makes no
+// observable difference: a mounted pairing route with no offer outstanding
+// answers exactly as this mux answers for a path it does not route.
+func NewMux(svc *todo.Service, pairs *pairing.Store, mw ...Middleware) http.Handler {
 	api := http.NewServeMux()
 	api.HandleFunc("GET "+apiPrefix+"/tasks", listTasks(svc))
 	api.HandleFunc("POST "+apiPrefix+"/tasks", createTask(svc))
@@ -45,10 +50,17 @@ func NewMux(svc *todo.Service, mw ...Middleware) http.Handler {
 	api.HandleFunc("DELETE "+apiPrefix+"/tasks/{id}", deleteTask(svc))
 
 	// Two muxes, not one: everything under the version prefix goes through mw,
-	// and the outer mux is where an unauthenticated route would be registered.
-	// The outer mux has no "/" handler, so every other path 404s.
+	// and the outer mux is where the unauthenticated route is registered. The
+	// outer mux has no "/" handler, so every other path 404s.
 	mux := http.NewServeMux()
 	mux.Handle(apiPrefix+"/", wrap(api, mw))
+	if pairs != nil {
+		// Registered without a method, so that the wrong method reaches the
+		// handler and is answered with a 404 too. A method-scoped pattern
+		// would have the mux itself reply 405, which announces that the route
+		// exists to anyone who sends a GET.
+		mux.HandleFunc(pairing.Path, pairDevice(pairs, newRateLimiter(pairBurst, pairRefill)))
+	}
 	return mux
 }
 
