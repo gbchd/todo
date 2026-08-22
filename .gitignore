@@ -37,7 +37,6 @@ go.work.sum
 .scratch/
 .playwright/
 .sandcastle/
-docs/
 node_modules/
 package.json
 package-lock.json
