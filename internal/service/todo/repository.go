@@ -5,6 +5,12 @@ import "context"
 // TaskRepository is the secondary port the Service depends on. The SQLite
 // adapter in internal/repository implements it; ISO-8601 parsing and NULL
 // handling stay private to that adapter.
+//
+// Task.Version belongs to the implementation, not the caller: Create stores a
+// task at version 1 and every subsequent write increments it, whatever version
+// the Task handed in carries. It is the value a caller passes back as
+// TaskPatch.ExpectedVersion to make a write conditional on nobody else having
+// written since.
 type TaskRepository interface {
 	Create(ctx context.Context, t Task) (Task, error)
 	Get(ctx context.Context, id int64) (Task, error)

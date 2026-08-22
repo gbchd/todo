@@ -427,4 +427,83 @@ var taskRepositoryContract = []contractCase{
 		assert.Equal(t, "parent", verr.Field)
 		assert.Contains(t, verr.Message, "subtasks are only one level deep")
 	}},
+
+	{"a created task starts at version 1 and every write moves it on", func(t *testing.T, repo todo.TaskRepository) {
+		bogus := newTask("versioned")
+		bogus.Version = 42
+		created := mustCreate(t, repo, bogus)
+		assert.Equal(t, int64(1), created.Version, "Create must seed the version, not echo the caller's")
+
+		first, err := repo.UpdateWith(t.Context(), created.ID, func(task todo.Task) (todo.Task, error) {
+			task.Title = "once"
+			return task, nil
+		})
+		require.NoError(t, err)
+		second, err := repo.UpdateWith(t.Context(), created.ID, func(task todo.Task) (todo.Task, error) {
+			task.Version = 1 // writing the version back must not pin it
+			task.Title = "twice"
+			return task, nil
+		})
+		require.NoError(t, err)
+		assert.Greater(t, first.Version, created.Version, "a write must move the version on")
+		assert.Greater(t, second.Version, first.Version, "the version counts writes, not the value written")
+
+		got, err := repo.Get(t.Context(), created.ID)
+		require.NoError(t, err)
+		assert.Equal(t, second.Version, got.Version, "the version a write returns must be the one stored")
+	}},
+
+	// The three ExpectedVersion cases run through a Service for the same reason
+	// the validation cases above do: the precondition is domain logic, and an
+	// implementation satisfies the contract by carrying both the version it
+	// reads and the *todo.ConflictError it raises back to the caller intact.
+	{"an update naming the current version is applied", func(t *testing.T, repo todo.TaskRepository) {
+		svc := todo.NewService(repo)
+		created, err := svc.AddTask(t.Context(), todo.NewTask{Title: "orig"})
+		require.NoError(t, err)
+
+		updated, err := svc.UpdateTask(t.Context(), created.ID, todo.TaskPatch{
+			Title:           todo.Set("changed"),
+			ExpectedVersion: todo.Set(created.Version),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "changed", updated.Title)
+	}},
+
+	{"an update naming a stale version is rejected as a conflict and writes nothing", func(t *testing.T, repo todo.TaskRepository) {
+		svc := todo.NewService(repo)
+		created, err := svc.AddTask(t.Context(), todo.NewTask{Title: "orig"})
+		require.NoError(t, err)
+
+		// Somebody else writes first; the version the caller read is now stale.
+		_, err = svc.UpdateTask(t.Context(), created.ID, todo.TaskPatch{Title: todo.Set("theirs")})
+		require.NoError(t, err)
+
+		_, err = svc.UpdateTask(t.Context(), created.ID, todo.TaskPatch{
+			Title:           todo.Set("mine"),
+			ExpectedVersion: todo.Set(created.Version),
+		})
+
+		var cerr *todo.ConflictError
+		require.ErrorAs(t, err, &cerr, "a stale version must surface as a conflict, matchable without string comparison")
+		assert.Equal(t, created.ID, cerr.TaskID)
+		assert.Equal(t, created.Version, cerr.Expected)
+		assert.Greater(t, cerr.Actual, cerr.Expected, "the conflict must report the version that won")
+
+		got, err := svc.GetTask(t.Context(), created.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "theirs", got.Title, "a rejected write must leave the winner's write standing")
+	}},
+
+	{"an update naming no version overwrites whatever it finds", func(t *testing.T, repo todo.TaskRepository) {
+		svc := todo.NewService(repo)
+		created, err := svc.AddTask(t.Context(), todo.NewTask{Title: "orig"})
+		require.NoError(t, err)
+		_, err = svc.UpdateTask(t.Context(), created.ID, todo.TaskPatch{Title: todo.Set("theirs")})
+		require.NoError(t, err)
+
+		updated, err := svc.UpdateTask(t.Context(), created.ID, todo.TaskPatch{Title: todo.Set("mine")})
+		require.NoError(t, err, "without an expected version the write is unconditional, exactly as before")
+		assert.Equal(t, "mine", updated.Title)
+	}},
 }

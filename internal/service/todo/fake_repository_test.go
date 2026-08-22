@@ -17,9 +17,12 @@ func newFakeRepository() *fakeRepository {
 	return &fakeRepository{tasks: make(map[int64]Task)}
 }
 
+// Create mirrors the schema's version default: the caller's Version is ignored
+// and every new task starts at 1.
 func (r *fakeRepository) Create(_ context.Context, t Task) (Task, error) {
 	r.nextID++
 	t.ID = r.nextID
+	t.Version = 1
 	r.tasks[t.ID] = t
 	return t, nil
 }
@@ -56,10 +59,14 @@ func (r *fakeRepository) withRollup(t Task) Task {
 
 // update is an unexported helper for UpdateWith — not part of the
 // TaskRepository port, since Service has no direct-update code path.
+// update mirrors the adapter's version=version+1: the stored version counts
+// writes, so a caller cannot pin it by handing back the copy it read.
 func (r *fakeRepository) update(_ context.Context, t Task) (Task, error) {
-	if _, ok := r.tasks[t.ID]; !ok {
+	stored, ok := r.tasks[t.ID]
+	if !ok {
 		return Task{}, ErrNotFound
 	}
+	t.Version = stored.Version + 1
 	r.tasks[t.ID] = t
 	return t, nil
 }

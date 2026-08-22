@@ -55,6 +55,12 @@ func validStatus(s Status) bool {
 // and AnyChildOverdue are derived: repositories populate them on every read
 // so a Parent Task's row can roll up its children's state, and ignore them
 // on write. See docs/adr/0001-subtasks-as-self-referential-tasks.md.
+//
+// Version is likewise owned by the repository: it starts at 1 and every write
+// increments it, so it is populated on read and ignored on write. A caller
+// that read a Task and means to write it back may hand the version it saw to
+// TaskPatch.ExpectedVersion to be told, rather than silently overwrite, when
+// someone else wrote in between.
 type Task struct {
 	ID          int64
 	Title       string
@@ -66,6 +72,8 @@ type Task struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	CompletedAt *time.Time
+
+	Version int64
 
 	ChildCount      int
 	DoneChildCount  int
@@ -108,6 +116,11 @@ func (o Optional[T]) Value() T { return o.value }
 // nil *int64 promotes a Subtask back to top level. Setting Status applies the
 // same lifecycle transition as the explicit Start/Complete/Reopen verbs,
 // atomically with the rest of the patch.
+//
+// ExpectedVersion is a precondition, not a field to write: when set, the patch
+// applies only if the stored Task.Version still matches, and fails with a
+// *ConflictError otherwise. It is therefore not a change — a patch carrying
+// nothing but a matching ExpectedVersion leaves UpdatedAt alone.
 type TaskPatch struct {
 	Title       Optional[string]
 	Description Optional[string]
@@ -115,6 +128,8 @@ type TaskPatch struct {
 	DueDate     Optional[*time.Time]
 	ParentID    Optional[*int64]
 	Status      Optional[Status]
+
+	ExpectedVersion Optional[int64]
 }
 
 // SortKey selects the ordering ListTasks applies.
